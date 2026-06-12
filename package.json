@@ -5,7 +5,11 @@
   "description": "Flexible Archivverwaltung für Geschichtsvereine – Mehrbenutzerbetrieb über Netzlaufwerk, frei definierbare Dokumenttypen, Versionshistorie und Dashboard.",
   "main": "src/main/main.js",
   "license": "MIT",
-  "author": "Geschichtsverein",
+  "homepage": "https://github.com/floern1/ArchiveTool",
+  "author": {
+    "name": "Geschichtsverein",
+    "email": "floern1@users.noreply.github.com"
+  },
   "scripts": {
     "start": "electron .",
     "postinstall": "electron-builder install-app-deps",
