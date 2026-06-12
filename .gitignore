@@ -1,20 +1,20 @@
-# Build output
-/build/
-/build-*/
-/out/
-/cmake-build-*/
-*.user
+# Dependencies
+node_modules/
 
-# Installer artifacts
-/installer/Output/
-*.exe
-*.zip
+# Build output
+dist/
+out/
 
 # Local database / runtime data
 *.sqlite
+*.sqlite-journal
 *.sqlite-shm
 *.sqlite-wal
 *.db
+
+# Logs
+npm-debug.log*
+*.log
 
 # IDE
 .vscode/
