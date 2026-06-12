@@ -1,0 +1,26 @@
+# Build output
+/build/
+/build-*/
+/out/
+/cmake-build-*/
+*.user
+
+# Installer artifacts
+/installer/Output/
+*.exe
+*.zip
+
+# Local database / runtime data
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
