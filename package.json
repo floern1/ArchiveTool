@@ -1,0 +1,29 @@
+{
+  "name": "archivtool",
+  "productName": "ArchivTool",
+  "version": "1.0.0",
+  "description": "Flexible Archivverwaltung für Geschichtsvereine – Mehrbenutzerbetrieb über Netzlaufwerk, frei definierbare Dokumenttypen, Versionshistorie und Dashboard.",
+  "main": "src/main/main.js",
+  "license": "MIT",
+  "homepage": "https://github.com/floern1/ArchiveTool",
+  "author": {
+    "name": "Geschichtsverein",
+    "email": "floern1@users.noreply.github.com"
+  },
+  "scripts": {
+    "start": "electron .",
+    "postinstall": "electron-builder install-app-deps",
+    "test": "node tests/launch.js",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win --x64 --arm64",
+    "dist:mac": "electron-builder --mac --x64 --arm64",
+    "dist:linux": "electron-builder --linux --x64 --arm64"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0"
+  },
+  "devDependencies": {
+    "electron": "^36.3.1",
+    "electron-builder": "^25.1.8"
+  }
+}

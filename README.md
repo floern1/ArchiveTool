@@ -1,107 +1,109 @@
-# Archiv-Tool
+# 🏛️ ArchivTool
 
-Eine flexible, leichtgewichtige Archivverwaltung für Geschichtsvereine und
-kleine Sammlungen. Gedacht als kostengünstige, intuitive Alternative zu großen
-Archivpaketen (z. B. ACTApro), ohne deren Komplexität.
+Flexible Archivverwaltung für kleine Geschichtsvereine – als eigenständige
+Desktop-Anwendung für **Windows, macOS und Linux** (jeweils x64 und ARM),
+ohne laufende Kosten und ohne externe Abhängigkeiten zur Laufzeit.
+
+Die gesamte Datenbank ist **eine einzige SQLite-Datei**, die typischerweise
+auf dem Netzlaufwerk des Vereins liegt. Mehrere Mitglieder können gleichzeitig
+damit arbeiten.
 
 ## Funktionen
 
-- **Frei definierbare Kategorien** (z. B. Bücher, Bilder, Filme, Dokumente …),
-  jederzeit erweiterbar.
-- **Eigene Felder pro Kategorie** – jede Kategorie kann ihre eigenen Attribute
-  haben (Text, mehrzeiliger Text, Ganzzahl, Dezimalzahl, Datum, Ja/Nein,
-  Auswahlliste). Beispiel: „Bücher“ mit *Autor*, *Erscheinungsjahr*, *ISBN*,
-  *Zustand*.
-- **Labels/Schlagwörter** mit Farbe, frei vergebbar und über Kategorien hinweg
-  nutzbar.
-- **Datei-Anhänge** (Scans, Fotos, Dokumente, Videos) werden in das Archiv
-  kopiert und mit dem Objekt verknüpft.
-- **Volltextsuche** über Titel, Inventarnummer, Standort und sämtliche
-  Feldinhalte; zusätzlich Filterung nach Label.
-- **CSV-Export** der aktuellen Ansicht (z. B. für Listen oder Inventur).
-- **Eigene lokale Datenbank** (SQLite) – kein Server, keine Cloud, alle Daten
-  bleiben im Verein.
+- **Benutzerkonten mit Passwort** – jedes Vereinsmitglied meldet sich mit
+  eigenem Konto an (Rollen: Administrator / Mitglied). Passwörter werden
+  ausschließlich als scrypt-Hash gespeichert.
+- **Schutz vor gleichzeitigem Schreiben** – jeder Eintrag trägt eine
+  Versionsnummer (optimistisches Locking). Speichern zwei Mitglieder denselben
+  Eintrag, bekommt das zweite eine verständliche Konfliktmeldung („zwischenzeitlich
+  von Karl Weber geändert“) und kann den aktuellen Stand laden oder bewusst
+  überschreiben. Zusätzlich sichert SQLite-Dateisperrung die Datenbank selbst ab.
+- **Versionierung / Änderungshistorie** – jede Anlage, Änderung und Löschung
+  wird mit Benutzer, Zeitstempel und vollständigem Daten-Schnappschuss
+  protokolliert. Pro Eintrag lässt sich Feld für Feld nachvollziehen,
+  *wer was wann* geändert hat (alt → neu). Gespeichert wird platzsparend nur
+  bei tatsächlichen Änderungen, nicht periodisch.
+- **Flexible Dokumenttypen** – Typen wie *Bücher*, *Bilder*, *Filme* werden in
+  der Anwendung selbst definiert, mit frei wählbaren Eingabefeldern und
+  passenden Datentypen:
+  Text (ein-/mehrzeilig), Zahl, Datum, **Datei-Pfad** (mit „Durchsuchen“ und
+  „Öffnen“), Ja/Nein und Auswahlliste.
+- **Pflichtfeld Archiv-ID** – jeder Eintrag braucht eine eindeutige
+  alphanumerische ID (z. B. `FOTO-1952-001`); Eindeutigkeit wird von der
+  Datenbank erzwungen (Groß-/Kleinschreibung wird ignoriert).
+- **Standard-Datenbankfunktionen** – Volltextsuche über alle Felder, Filter je
+  Eingabefeld, Sortierung, Seitenweise Anzeige, Anlegen, Bearbeiten, Löschen.
+- **Dashboard** – Kennzahlen, Einträge pro Dokumenttyp, Neuzugänge der letzten
+  12 Monate, aktivste Mitglieder und die letzten Aktivitäten.
+- **Moderne Oberfläche** – Electron-Anwendung mit deutschsprachiger,
+  aufgeräumter Benutzeroberfläche.
 
-## Datenablage
+## Erste Schritte (für den Verein)
 
-Alle Daten liegen in einem benutzereigenen, beschreibbaren Verzeichnis
-(unter Windows `%APPDATA%\ArchiveTool\ArchiveTool`):
+1. Installationspaket für das jeweilige Betriebssystem installieren
+   (siehe [Builds erstellen](#builds-erstellen)).
+2. Beim ersten Start **„Neue Datenbank anlegen“** wählen und die Datei auf dem
+   gemeinsamen Netzlaufwerk speichern, z. B. `V:\Verein\vereinsarchiv.sqlite`.
+3. Das erste **Administratorkonto** anlegen.
+4. Unter **Benutzer** Konten für die anderen Mitglieder anlegen.
+5. Unter **Dokumenttypen** die ersten Typen (z. B. „Bücher“, „Bilder“) mit den
+   gewünschten Feldern definieren – danach können alle Mitglieder Einträge
+   erfassen. Auf den anderen PCs wählt man beim ersten Start einfach
+   **„Bestehende Datenbank öffnen“** und dieselbe Datei.
 
-```
-archive.sqlite        die Datenbank (Kategorien, Felder, Objekte, Labels …)
-attachments/          die importierten Anhang-Dateien
-```
+### Hinweise zum Netzlaufwerk
 
-Das Verzeichnis lässt sich in der Anwendung über **Datei → Datenverzeichnis
-öffnen** anzeigen. Für eine Sicherung genügt es, diesen Ordner zu kopieren.
+- Die Anwendung öffnet die Datenbank bewusst **ohne WAL-Modus**
+  (`journal_mode=DELETE`, `synchronous=FULL`) – das ist die für
+  Netzwerk-Dateisysteme sichere Betriebsart. Kurzzeitig gleichzeitige
+  Schreibvorgänge warten bis zu 15 Sekunden aufeinander.
+- Empfohlen sind **SMB-Freigaben** (klassisches Windows-Netzlaufwerk, NAS).
+  Von NFS-Freigaben mit fehlerhafter Datei-Sperrung wird abgeraten.
+- **Datensicherung**: Die gesamte Datenbank ist eine Datei – regelmäßig
+  kopieren genügt (am besten, wenn niemand angemeldet ist).
+- Dateien (Scans, Fotos, Filme) werden nicht in die Datenbank kopiert, sondern
+  über Felder vom Typ *Datei-Pfad* referenziert. Damit alle Mitglieder die
+  Pfade öffnen können, sollten die Dateien ebenfalls auf dem Netzlaufwerk
+  liegen (idealerweise unter demselben Laufwerksbuchstaben/Mount).
 
-## Architektur
+## Entwicklung
 
-C++17 mit Qt 6 (Widgets) und SQLite (über das in Qt enthaltene `QtSql`-Modul,
-Treiber `QSQLITE` – keine externe Datenbankbibliothek nötig). Sauber in
-Schichten getrennt:
+Voraussetzungen: [Node.js](https://nodejs.org) ≥ 20 (nur zum Entwickeln/Bauen –
+die fertige Anwendung benötigt **kein** installiertes Node, Python o. Ä.).
 
-| Schicht       | Verzeichnis        | Aufgabe                                   |
-|---------------|--------------------|-------------------------------------------|
-| `model`       | `src/model`        | reine Datenstrukturen                     |
-| `db`          | `src/db`           | Verbindung + versionierte Schema-Migration|
-| `repository`  | `src/repository`   | CRUD-/SQL-Zugriff je Entität              |
-| `ui`          | `src/ui`           | Hauptfenster und Dialoge (Qt Widgets)     |
-
-Das Datenmodell ist vollflexibel (Entity-Attribute-Value): Objekte besitzen
-ein paar eingebaute Felder (Titel, Inventarnummer, Standort, Notizen) sowie
-beliebig viele benutzerdefinierte Feldwerte gemäß der Felddefinitionen ihrer
-Kategorie.
-
-## Bauen
-
-### Voraussetzungen
-
-- CMake ≥ 3.21
-- Ein C++17-Compiler (MSVC, GCC oder Clang)
-- Qt 6 (Komponenten `Core`, `Gui`, `Widgets`, `Sql`)
-
-### Build (alle Plattformen)
-
-```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release
-```
-
-Die ausführbare Datei liegt anschließend unter `build/ArchiveTool`
-(bzw. `build/ArchiveTool.exe` unter Windows).
-
-### Windows-Installer
-
-Der Installer wird automatisch per GitHub Actions erzeugt
-(`.github/workflows/build-windows.yml`): Auf einem Windows-Runner wird die
-Anwendung gebaut, `windeployqt` bündelt **alle** Qt- und SQLite-Laufzeit-DLLs
-in den Ordner `dist`, und **Inno Setup** packt daraus einen eigenständigen
-Installer. Das Ergebnis benötigt auf dem Zielrechner keine Vorinstallation von
-Qt oder sonstigen Abhängigkeiten.
-
-Manuell unter Windows (in einer Developer-Eingabeaufforderung mit Qt im `PATH`):
-
-```bat
-cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-mkdir dist & copy build\ArchiveTool.exe dist\
-windeployqt --release --no-translations dist\ArchiveTool.exe
-"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=1.0.0 /DSourceDir=..\dist installer\archivetool.iss
+```bash
+npm install        # Abhängigkeiten installieren (kompiliert SQLite für Electron)
+npm start          # Anwendung im Entwicklungsmodus starten
+npm test           # Testsuite (Datenbankschicht, Konflikte, Historie) ausführen
 ```
 
-Die fertige `ArchiveTool-Setup-<Version>.exe` liegt dann unter
-`installer\Output`.
+### Builds erstellen
 
-### Hinweis zu 32-Bit (x86)
+```bash
+npm run dist:win     # Windows: Installer (x64 + ARM64) und portable EXE
+npm run dist:mac     # macOS:   DMG/ZIP (Intel + Apple Silicon)
+npm run dist:linux   # Linux:   AppImage/DEB (x64 + ARM64)
+```
 
-Qt 6 stellt offiziell **nur 64-Bit-Windows-Binärdateien** bereit. Der oben
-beschriebene Installer ist daher 64-Bit und läuft auf jedem aktuellen Windows
-(Windows 10/11 sind ausschließlich 64-Bit). Ein echter 32-Bit-Build (x86) wäre
-nur mit Qt 5 oder einem selbst kompilierten Qt 6 möglich – der Quellcode ist
-weitgehend Qt-5-kompatibel. Falls 32-Bit zwingend benötigt wird, kann die
-Toolchain entsprechend umgestellt werden.
+Die Pakete landen in `dist/`. Builds werden je Plattform auf dem jeweiligen
+Betriebssystem erstellt; der mitgelieferte GitHub-Actions-Workflow
+(`.github/workflows/build.yml`) baut bei jedem Push alle Plattformen
+automatisch und legt die Installer als Artefakte ab.
+
+### Technik
+
+| Baustein   | Wahl                                                              |
+| ---------- | ----------------------------------------------------------------- |
+| Oberfläche | Electron, Vanilla-JS/CSS (kein Build-Schritt im Renderer)         |
+| Datenbank  | SQLite über `better-sqlite3` (einzige native Abhängigkeit)        |
+| Passwörter | Node-eigenes `crypto.scrypt` (keine Zusatzbibliothek)             |
+| Sicherheit | `contextIsolation`, Sandbox-Renderer, schmale IPC-Schnittstelle, Rechteprüfung im Main-Prozess |
+
+Datenmodell (vereinfacht): `users`, `doc_types` + `doc_type_fields`
+(Felddefinitionen je Typ), `records` (Eintrag mit eindeutiger `archive_id`,
+JSON-Felddaten und `version`-Zähler) sowie `record_history`
+(Schnappschüsse aller Änderungen mit Benutzer und Zeitstempel).
 
 ## Lizenz
 
-Siehe [LICENSE](LICENSE).
+MIT – siehe [LICENSE](LICENSE).
