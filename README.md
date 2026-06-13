@@ -33,6 +33,24 @@ damit arbeiten.
   Datenbank erzwungen (Groß-/Kleinschreibung wird ignoriert).
 - **Standard-Datenbankfunktionen** – Volltextsuche über alle Felder, Filter je
   Eingabefeld, Sortierung, Seitenweise Anzeige, Anlegen, Bearbeiten, Löschen.
+- **Import bestehender Bestände** (Administratoren) – Tabellen-Exporte aus
+  *Citavi* o. Ä. als **Excel (.xlsx)** oder **CSV** übernehmen. Ein Assistent
+  führt in drei Schritten durch den Import:
+  1. **Felder als Checkliste** – jede Spalte der Datei wird mit ihrem
+     **Füllgrad in Prozent** angezeigt; per Häkchen wird entschieden, ob sie
+     übernommen wird (gut gefüllte Spalten sind vorausgewählt).
+  2. **Zuordnung** – jede übernommene Spalte wird entweder als **neues Feld**
+     angelegt (mit Bezeichnung und Datentyp) oder auf ein **bereits
+     bestehendes, anders benanntes Feld** abgebildet. Die Archiv-ID lässt sich
+     aus einer Spalte übernehmen (z. B. eine Laufnummer) oder automatisch
+     erzeugen.
+  3. **Redundanzprüfung** – über frei wählbare Schlüsselspalten erkennt der
+     Assistent doppelte Zeilen *innerhalb der Datei* sowie Archiv-IDs, die
+     *bereits in der Datenbank* vorhanden sind. Dubletten lassen sich
+     überspringen oder in vorhandene Einträge einpflegen.
+
+  Der Import erfolgt ohne externe Bibliotheken: `.xlsx`-Dateien (ein ZIP aus
+  XML-Teilen) werden mit Bordmitteln gelesen.
 - **Dashboard** – Kennzahlen, Einträge pro Dokumenttyp, Neuzugänge der letzten
   12 Monate, aktivste Mitglieder und die letzten Aktivitäten.
 - **Moderne Oberfläche** – Electron-Anwendung mit deutschsprachiger,
