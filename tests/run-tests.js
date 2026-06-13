@@ -472,6 +472,29 @@ test('bulk import overwrite merges into existing record', () => {
   assert.strictEqual(full.data.jahr, 2024, 'imported field merged in');
 });
 
+test('bulk import overwrite preserves data of fields removed from the type', () => {
+  // A record may carry values for fields that were later dropped from the type;
+  // updateDocType keeps those in the JSON snapshot. An overwrite-import must not
+  // silently discard them.
+  const t = db.createDocType({
+    name: 'Bestandskartei', icon: '📥',
+    fields: [{ label: 'Titel', field_type: 'text', required: true }, { label: 'Altfeld', field_type: 'text' }],
+  }, admin);
+  db.createRecord({ archiveId: 'KART-1', docTypeId: t.id, data: { titel: 'Alt', altfeld: 'bewahren' } }, admin);
+  // Drop "altfeld" from the type definition; its value survives in the record.
+  db.updateDocType(t.id, { name: 'Bestandskartei', icon: '📥', fields: [{ name: 'titel', label: 'Titel', field_type: 'text', required: true }] });
+
+  const res = db.importRecords({
+    docTypeId: t.id,
+    rows: [{ archiveId: 'KART-1', data: { titel: 'Neu' }, sourceRowNumber: 2 }],
+    onDuplicate: 'overwrite',
+  }, member);
+  assert.strictEqual(res.updated, 1);
+  const full = db.getRecord(db.listRecords({ search: 'KART-1' }).records[0].id);
+  assert.strictEqual(full.data.titel, 'Neu', 'imported value applied');
+  assert.strictEqual(full.data.altfeld, 'bewahren', 'value of removed field preserved');
+});
+
 test('findExistingArchiveIds reports collisions case-insensitively', () => {
   const set = db.findExistingArchiveIds(['imp-001', 'IMP-100', 'NICHT-DA']);
   assert.ok(set.has('imp-001'));

@@ -686,9 +686,19 @@ function importRecords({ docTypeId, rows, onDuplicate = 'skip' }, actor) {
         const existing = findStmt.get(id);
         if (existing) {
           if (onDuplicate === 'overwrite') {
-            // Merge the imported values onto the existing record and validate the
-            // result, so required fields already present in the record are kept.
-            const merged = validateRecordData(type.fields, { ...JSON.parse(existing.data), ...(r.data || {}) });
+            // Validate the imported values merged onto the existing record, so
+            // required fields already present in the record are kept. The
+            // validated result only contains keys known to the type, so we then
+            // re-attach any other values the record already had (e.g. fields
+            // that were later removed from the type) — exactly as updateDocType
+            // preserves them, instead of silently dropping them on overwrite.
+            const prior = JSON.parse(existing.data);
+            const validated = validateRecordData(type.fields, { ...prior, ...(r.data || {}) });
+            const known = new Set(type.fields.map((f) => f.name));
+            const merged = { ...validated };
+            for (const [k, v] of Object.entries(prior)) {
+              if (!known.has(k)) merged[k] = v;
+            }
             updStmt.run(JSON.stringify(merged), actorId, existing.id, existing.version);
             writeHistory(d, getStmt.get(existing.id), 'update', actor);
             seen.add(lower);
