@@ -40,7 +40,7 @@ jobs:
       - run: npx electron-builder ${{ matrix.args }} --publish never
       - uses: actions/upload-artifact@v4
         with:
-          name: archivtool-${{ matrix.os }}
+          name: archivverwaltung-bgv-wk-${{ matrix.os }}
           path: |
             dist/*.exe
             dist/*.dmg

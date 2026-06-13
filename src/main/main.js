@@ -27,7 +27,7 @@ function createWindow() {
     minHeight: 640,
     show: false,
     backgroundColor: '#f4f5f7',
-    title: 'ArchivTool',
+    title: 'Archivverwaltung-BGV-WK',
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload.js'),
       contextIsolation: true,
