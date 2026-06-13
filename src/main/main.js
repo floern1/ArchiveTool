@@ -28,6 +28,7 @@ function createWindow() {
     show: false,
     backgroundColor: '#f4f5f7',
     title: 'Archivverwaltung-BGV-WK',
+    icon: path.join(__dirname, '..', 'renderer', 'assets', 'logo.png'),
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload.js'),
       contextIsolation: true,
