@@ -325,17 +325,33 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}/;
 const DDMMYYYY_RE = /^\d{1,2}[.\/]\d{1,2}[.\/]\d{2,4}$/;
 const NUMERIC_RE = /^-?\d+([.,]\d+)?$/;
 
+// Headers that strongly suggest a date column. Combined with values that look
+// like Excel date serials, this lets us recognise Citavi date exports (which
+// store dates as plain serial numbers) without mistaking year columns (e.g.
+// "Jahr" = 1929) for dates.
+const DATE_HEADER_RE = /datum|erfasst am|ge[äa]ndert am|zugriff|ver[öo]ffentlich|\bam\b|\bdate\b|aufnahme|aufgenommen/i;
+// Plausible Excel serial-date range: ~1954-10 (20000) … ~2064 (60000).
+const SERIAL_MIN = 20000;
+const SERIAL_MAX = 60000;
+
 /** Conservative field-type guess from a sample of non-empty values. */
-function inferFieldType(values) {
+function inferFieldType(values, header) {
   if (!values || values.length === 0) return 'text';
   let allNumeric = true;
   let longOrMultiline = false;
+  let allDateStr = true;
+  let allSerial = true;
   for (const raw of values) {
-    const s = String(raw);
+    const s = String(raw).trim();
     if (s.includes('\n') || s.length > 80) longOrMultiline = true;
-    if (!NUMERIC_RE.test(s.trim())) allNumeric = false;
+    if (!NUMERIC_RE.test(s)) allNumeric = false;
+    if (!(DATE_RE.test(s) || DDMMYYYY_RE.test(s))) allDateStr = false;
+    const n = Number(s.replace(',', '.'));
+    if (!(Number.isFinite(n) && n >= SERIAL_MIN && n <= SERIAL_MAX)) allSerial = false;
   }
   if (longOrMultiline) return 'textarea';
+  if (allDateStr) return 'date';                               // explicit date strings
+  if (allSerial && header && DATE_HEADER_RE.test(header)) return 'date'; // serial dates in a date column
   if (allNumeric) return 'number';
   return 'text';
 }
@@ -374,7 +390,7 @@ function analyzeColumns(rows) {
       total: data.length,
       pct: data.length ? Math.round((filled / data.length) * 1000) / 10 : 0,
       samples,
-      inferredType: inferFieldType(typeSample),
+      inferredType: inferFieldType(typeSample, headerText),
       suggestedLabel: label,
       suggestedName: deriveFieldName(headerText || ('spalte_' + indexToColLetters(c))),
     });

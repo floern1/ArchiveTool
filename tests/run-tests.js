@@ -389,6 +389,17 @@ test('reads a synthetic .xlsx (shared/rich/inline strings + numbers)', () => {
   assert.strictEqual(cols[2].inferredType, 'number');
 });
 
+test('field-type inference (date strings, header-aware Excel serials, years stay numbers)', () => {
+  assert.strictEqual(importer.inferFieldType(['2019-09-23', '2020-01-01'], 'Datum'), 'date');
+  assert.strictEqual(importer.inferFieldType(['04.05.2020'], 'Erfasst am'), 'date');
+  // serial numbers only count as dates when the header looks like a date column
+  assert.strictEqual(importer.inferFieldType(['43734.37', '42411.7'], 'Erstveröffentlichung'), 'date');
+  assert.strictEqual(importer.inferFieldType(['43734.37', '42411.7'], 'Einheitssachtitel'), 'number');
+  // year columns must NOT become dates
+  assert.strictEqual(importer.inferFieldType(['1929', '2009'], 'Jahr ermittelt'), 'number');
+  assert.strictEqual(importer.inferFieldType(['Elberfeld', 'Köln'], 'Ort'), 'text');
+});
+
 test('CSV parsing with delimiter detection and quotes', () => {
   const rows = importer.parseCsv('a;b;c\n"x;1";"y\ny";z\n');
   assert.deepStrictEqual(rows[0], ['a', 'b', 'c']);
