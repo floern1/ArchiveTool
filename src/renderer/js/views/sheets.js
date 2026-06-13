@@ -87,7 +87,7 @@ window.AT = window.AT || {};
         h('div', { class: 'sheet-scroll' },
           h('table', { class: 'sheet' },
             h('thead', {}, head),
-            h('tbody', {}, rows))));
+            h('tbody', {}, rows)))));
   }
 
   /* ---------------- view entry point ---------------- */
