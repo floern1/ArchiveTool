@@ -492,6 +492,69 @@ table.data tbody tr.clickable:hover { background: var(--surface-2); }
 .history-changes .old { text-decoration: line-through; color: var(--text-faint); }
 .history-changes .new { color: var(--text); font-weight: 500; }
 
+/* ================= Sheet (Übersicht) view ================= */
+
+.sheet-wrap { overflow: hidden; }
+
+.sheet-scroll {
+  overflow: auto;
+  max-height: 75vh;
+}
+
+table.sheet {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+table.sheet thead {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+table.sheet th {
+  background: var(--surface-2);
+  text-align: left;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text-faint);
+  font-weight: 600;
+  padding: 9px 12px;
+  border-bottom: 2px solid var(--border);
+  white-space: nowrap;
+}
+
+.sheet-col {
+  width: 180px;
+  min-width: 120px;
+}
+
+.sheet-id {
+  width: 150px;
+  min-width: 150px;
+}
+
+table.sheet td {
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  max-width: 260px;
+  min-width: 120px;
+  /* allow multi-line scroll inside cell */
+  overflow-y: auto;
+  max-height: 180px;
+  word-break: break-word;
+  white-space: pre-wrap;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+table.sheet tbody tr:hover {
+  background: var(--surface-2);
+}
+
 /* ================= Toasts ================= */
 
 #toast-root {
