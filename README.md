@@ -1,4 +1,4 @@
-# 🏛️ ArchivTool
+# 🏛️ Archivverwaltung-BGV-WK
 
 Flexible Archivverwaltung für kleine Geschichtsvereine – als eigenständige
 Desktop-Anwendung für **Windows, macOS und Linux** (jeweils x64 und ARM),

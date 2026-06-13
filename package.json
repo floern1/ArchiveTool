@@ -1,6 +1,6 @@
 {
-  "name": "archivtool",
-  "productName": "ArchivTool",
+  "name": "archivverwaltung-bgv-wk",
+  "productName": "Archivverwaltung-BGV-WK",
   "version": "1.0.0",
   "description": "Flexible Archivverwaltung für Geschichtsvereine – Mehrbenutzerbetrieb über Netzlaufwerk, frei definierbare Dokumenttypen, Versionshistorie und Dashboard.",
   "main": "src/main/main.js",

@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Database layer of ArchivTool.
+ * Database layer of Archivverwaltung-BGV-WK.
  *
  * The SQLite file typically lives on a shared network drive and is opened by
  * several application instances at the same time. Two mechanisms keep
