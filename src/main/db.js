@@ -21,10 +21,11 @@
 
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const Database = require('better-sqlite3');
 const { hashPassword, verifyPassword } = require('./auth');
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 const FIELD_TYPES = ['text', 'textarea', 'number', 'date', 'filepath', 'boolean', 'select'];
 
@@ -80,11 +81,19 @@ function requireDb() {
 }
 
 function migrate() {
-  const userVersion = db.pragma('user_version', { simple: true });
-  if (userVersion >= SCHEMA_VERSION) return;
+  let v = db.pragma('user_version', { simple: true });
+  if (v >= SCHEMA_VERSION) return;
 
   const tx = db.transaction(() => {
-    db.exec(`
+    if (v < 1) migrateV1();
+    if (v < 2) migrateV2();
+    db.pragma(`user_version = ${SCHEMA_VERSION}`);
+  });
+  tx();
+}
+
+function migrateV1() {
+  db.exec(`
       CREATE TABLE IF NOT EXISTS users (
         id            INTEGER PRIMARY KEY AUTOINCREMENT,
         username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -145,9 +154,16 @@ function migrate() {
       CREATE INDEX IF NOT EXISTS idx_history_record ON record_history(record_id);
       CREATE INDEX IF NOT EXISTS idx_history_time ON record_history(changed_at);
     `);
-    db.pragma(`user_version = ${SCHEMA_VERSION}`);
-  });
-  tx();
+}
+
+/**
+ * v2: bundle bulk imports (and other multi-record operations) under a shared
+ * `batch_id`, so the dashboard and the rewind menu can treat a whole import as
+ * a single step instead of one entry per record.
+ */
+function migrateV2() {
+  db.exec('ALTER TABLE record_history ADD COLUMN batch_id TEXT');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_history_batch ON record_history(batch_id)');
 }
 
 /* ------------------------------------------------------------------ */
@@ -464,13 +480,13 @@ function rowToRecord(row) {
   return { ...row, data: JSON.parse(row.data) };
 }
 
-function writeHistory(d, record, action, actor) {
+function writeHistory(d, record, action, actor, batchId = null) {
   d.prepare(`
-    INSERT INTO record_history (record_id, archive_id, doc_type_id, version, action, data, changed_by, changed_by_name)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO record_history (record_id, archive_id, doc_type_id, version, action, data, changed_by, changed_by_name, batch_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     record.id, record.archive_id, record.doc_type_id, record.version, action,
-    record.data, actor ? actor.id : null, actor ? actor.display_name : 'System'
+    record.data, actor ? actor.id : null, actor ? actor.display_name : 'System', batchId
   );
 }
 
@@ -576,7 +592,25 @@ const SORTABLE = {
   updated_at: 'r.updated_at',
 };
 
-function listRecords({ docTypeId, search, fieldFilters, sort, dir, limit, offset } = {}) {
+/**
+ * SQL ORDER BY fragment for a sort key. Besides the built-in columns
+ * (archive_id / created_at / updated_at) a key of the form `field:<name>`
+ * sorts by a value inside the JSON field data. The field name is validated
+ * against FIELD_NAME_RE, so it is safe to inline into the json path.
+ */
+function orderExpr(sort, dir) {
+  const d = dir === 'desc' ? 'DESC' : 'ASC';
+  if (SORTABLE[sort]) return `${SORTABLE[sort]} ${d}`;
+  if (typeof sort === 'string' && sort.startsWith('field:')) {
+    const name = sort.slice(6);
+    if (FIELD_NAME_RE.test(name)) {
+      return `json_extract(r.data, '$.${name}') COLLATE NOCASE ${d}`;
+    }
+  }
+  return null;
+}
+
+function listRecords({ docTypeId, search, fieldFilters, sort, dir, sort2, dir2, limit, offset } = {}) {
   const d = requireDb();
   const where = [];
   const params = [];
@@ -599,8 +633,17 @@ function listRecords({ docTypeId, search, fieldFilters, sort, dir, limit, offset
     }
   }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  const orderCol = SORTABLE[sort] || SORTABLE.archive_id;
-  const orderDir = dir === 'desc' ? 'DESC' : 'ASC';
+
+  // Primary sort, an optional secondary sort as a tie-break, and finally a
+  // stable fallback on archive_id / id so equal rows keep a deterministic order.
+  const orderParts = [];
+  const primary = orderExpr(sort, dir) || `${SORTABLE.archive_id} ASC`;
+  orderParts.push(primary);
+  const secondary = orderExpr(sort2, dir2);
+  if (secondary && sort2 !== sort) orderParts.push(secondary);
+  orderParts.push('r.archive_id COLLATE NOCASE ASC', 'r.id ASC');
+  const orderSql = orderParts.join(', ');
+
   const lim = Math.min(Math.max(Number(limit) || 50, 1), 500);
   const off = Math.max(Number(offset) || 0, 0);
 
@@ -614,7 +657,7 @@ function listRecords({ docTypeId, search, fieldFilters, sort, dir, limit, offset
     JOIN doc_types t ON t.id = r.doc_type_id
     LEFT JOIN users uu ON uu.id = r.updated_by
     ${whereSql}
-    ORDER BY ${orderCol} ${orderDir}
+    ORDER BY ${orderSql}
     LIMIT ? OFFSET ?
   `).all(...params, lim, off);
   return { total, limit: lim, offset: off, records: rows.map(rowToRecord) };
@@ -682,6 +725,9 @@ function importRecords({ docTypeId, rows, onDuplicate = 'skip', perId = null }, 
   const d = requireDb();
   const type = getDocType(docTypeId);
   const actorId = actor ? actor.id : null;
+  // All history rows of this import share one batch id, so the dashboard and
+  // the rewind menu can present the whole import as a single step.
+  const batchId = crypto.randomUUID();
 
   const insStmt = d.prepare(
     'INSERT INTO records (archive_id, doc_type_id, data, created_by, updated_by) VALUES (?, ?, ?, ?, ?)'
@@ -725,7 +771,7 @@ function importRecords({ docTypeId, rows, onDuplicate = 'skip', perId = null }, 
               if (!known.has(k)) merged[k] = v;
             }
             updStmt.run(JSON.stringify(merged), actorId, existing.id, existing.version);
-            writeHistory(d, getStmt.get(existing.id), 'update', actor);
+            writeHistory(d, getStmt.get(existing.id), 'update', actor, batchId);
             seen.add(lower);
             result.updated++;
           } else {
@@ -735,7 +781,7 @@ function importRecords({ docTypeId, rows, onDuplicate = 'skip', perId = null }, 
         }
         const clean = validateRecordData(type.fields, r.data || {});
         const info = insStmt.run(id, docTypeId, JSON.stringify(clean), actorId, actorId);
-        writeHistory(d, getStmt.get(info.lastInsertRowid), 'create', actor);
+        writeHistory(d, getStmt.get(info.lastInsertRowid), 'create', actor, batchId);
         seen.add(lower);
         result.created++;
       } catch (e) {
@@ -744,6 +790,7 @@ function importRecords({ docTypeId, rows, onDuplicate = 'skip', perId = null }, 
     }
   });
   tx();
+  result.batchId = batchId;
   return result;
 }
 
@@ -756,6 +803,249 @@ function getRecordHistory(recordId) {
     WHERE h.record_id = ?
     ORDER BY h.version DESC, h.id DESC
   `).all(recordId).map((r) => ({ ...r, data: JSON.parse(r.data) }));
+}
+
+/* ------------------------------------------------------------------ */
+/* Rewind: undo recent changes                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Recent change operations, newest first, for the rewind menu. Bulk imports
+ * (and reverted imports) are collapsed into a single operation via their shared
+ * batch_id; individual edits are listed one by one. Each operation reports
+ * whether it can still be undone (i.e. the affected records have not been
+ * changed again in the meantime).
+ */
+function listRewind({ limit } = {}) {
+  const d = requireDb();
+  const lim = Math.min(Math.max(Number(limit) || 50, 1), 200);
+
+  // One row per operation: a single history entry (batch_id NULL) or a whole
+  // batch. rep_id is the latest history row of the operation.
+  const ops = d.prepare(`
+    SELECT MAX(h.id) AS rep_id,
+           h.batch_id AS batch_id,
+           COUNT(*)   AS cnt,
+           SUM(CASE WHEN h.action = 'create' THEN 1 ELSE 0 END) AS creates,
+           SUM(CASE WHEN h.action = 'update' THEN 1 ELSE 0 END) AS updates,
+           SUM(CASE WHEN h.action = 'delete' THEN 1 ELSE 0 END) AS deletes
+    FROM record_history h
+    GROUP BY CASE WHEN h.batch_id IS NULL THEN 'single:' || h.id ELSE 'batch:' || h.batch_id END
+    ORDER BY rep_id DESC
+    LIMIT ?
+  `).all(lim);
+
+  const repStmt = d.prepare(`
+    SELECT h.id, h.action, h.archive_id, h.record_id, h.version, h.changed_at, h.batch_id,
+           COALESCE(u.display_name, h.changed_by_name) AS changed_by_display,
+           t.name AS doc_type_name, t.icon AS doc_type_icon
+    FROM record_history h
+    LEFT JOIN users u ON u.id = h.changed_by
+    LEFT JOIN doc_types t ON t.id = h.doc_type_id
+    WHERE h.id = ?
+  `);
+
+  return ops.map((op) => {
+    const rep = repStmt.get(op.rep_id);
+    const isBatch = op.batch_id != null;
+    return {
+      kind: isBatch ? 'batch' : 'single',
+      historyId: rep.id,
+      batchId: op.batch_id,
+      action: rep.action,
+      archiveId: rep.archive_id,
+      changedAt: rep.changed_at,
+      changedByDisplay: rep.changed_by_display,
+      docTypeName: rep.doc_type_name,
+      docTypeIcon: rep.doc_type_icon,
+      count: op.cnt,
+      creates: op.creates,
+      updates: op.updates,
+      deletes: op.deletes,
+      revertableCount: operationRevertableCount(d, op.batch_id, rep.id),
+    };
+  });
+}
+
+/** How many records of an operation can still be undone (are at their head). */
+function operationRevertableCount(d, batchId, historyId) {
+  const cond = `
+    ((h.action = 'create' OR h.action = 'update') AND r.id IS NOT NULL AND r.version = h.version)
+    OR (h.action = 'delete' AND r.id IS NULL)`;
+  if (batchId != null) {
+    return d.prepare(`
+      SELECT COUNT(*) AS n FROM record_history h
+      LEFT JOIN records r ON r.id = h.record_id
+      WHERE h.batch_id = ? AND (${cond})
+    `).get(batchId).n;
+  }
+  return d.prepare(`
+    SELECT COUNT(*) AS n FROM record_history h
+    LEFT JOIN records r ON r.id = h.record_id
+    WHERE h.id = ? AND (${cond})
+  `).get(historyId).n;
+}
+
+/** The record snapshot right before the change that produced `version`. */
+function priorSnapshot(d, recordId, version) {
+  return d.prepare(
+    'SELECT * FROM record_history WHERE record_id = ? AND version = ? ORDER BY id DESC LIMIT 1'
+  ).get(recordId, version - 1);
+}
+
+/**
+ * Undo a single history entry, writing the inverse change as new history (so
+ * the undo is itself logged and can be undone again). Only succeeds if the
+ * record is still in the exact state this entry produced; otherwise a reason is
+ * returned and nothing is changed. Must run inside a transaction.
+ */
+function revertOne(d, h, actor, batchId) {
+  const current = d.prepare('SELECT * FROM records WHERE id = ?').get(h.record_id);
+  if (h.action === 'create') {
+    if (!current) return { archiveId: h.archive_id, skipped: 'Eintrag existiert nicht mehr' };
+    if (current.version !== h.version) return { archiveId: h.archive_id, skipped: 'Eintrag wurde seither geändert' };
+    writeHistory(d, { ...current, version: current.version + 1 }, 'delete', actor, batchId);
+    d.prepare('DELETE FROM records WHERE id = ?').run(current.id);
+    return { archiveId: h.archive_id, action: 'deleted' };
+  }
+  if (h.action === 'update') {
+    if (!current) return { archiveId: h.archive_id, skipped: 'Eintrag existiert nicht mehr' };
+    if (current.version !== h.version) return { archiveId: h.archive_id, skipped: 'Eintrag wurde seither geändert' };
+    const prior = priorSnapshot(d, h.record_id, h.version);
+    if (!prior) return { archiveId: h.archive_id, skipped: 'Kein vorheriger Stand vorhanden' };
+    try {
+      d.prepare(
+        'UPDATE records SET archive_id = ?, data = ?, version = version + 1, updated_by = ?, ' +
+        "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?"
+      ).run(prior.archive_id, prior.data, actor ? actor.id : null, current.id);
+    } catch (e) {
+      if (String(e.message).includes('UNIQUE')) {
+        return { archiveId: h.archive_id, skipped: 'Frühere Archiv-ID ist inzwischen anderweitig vergeben' };
+      }
+      throw e;
+    }
+    writeHistory(d, d.prepare('SELECT * FROM records WHERE id = ?').get(current.id), 'update', actor, batchId);
+    return { archiveId: prior.archive_id, action: 'restored' };
+  }
+  if (h.action === 'delete') {
+    if (current) return { archiveId: h.archive_id, skipped: 'Eintrag existiert bereits wieder' };
+    if (d.prepare('SELECT 1 FROM records WHERE archive_id = ?').get(h.archive_id)) {
+      return { archiveId: h.archive_id, skipped: 'Archiv-ID ist inzwischen vergeben' };
+    }
+    const info = d.prepare(
+      'INSERT INTO records (archive_id, doc_type_id, data, created_by, updated_by) VALUES (?, ?, ?, ?, ?)'
+    ).run(h.archive_id, h.doc_type_id, h.data, actor ? actor.id : null, actor ? actor.id : null);
+    writeHistory(d, d.prepare('SELECT * FROM records WHERE id = ?').get(info.lastInsertRowid), 'create', actor, batchId);
+    return { archiveId: h.archive_id, action: 'recreated' };
+  }
+  return { archiveId: h.archive_id, skipped: 'Unbekannte Aktion' };
+}
+
+/** Undo every record touched by a batch (e.g. a whole import) as one new batch. */
+function revertBatch(batchId, actor) {
+  const d = requireDb();
+  const rows = d.prepare('SELECT * FROM record_history WHERE batch_id = ? ORDER BY id DESC').all(batchId);
+  if (rows.length === 0) throw new AppError('NOT_FOUND', 'Der Vorgang wurde nicht gefunden.');
+  const newBatch = crypto.randomUUID();
+  const result = { reverted: 0, skipped: [] };
+  // Keep only the latest history row per record, so a batch that touched the
+  // same record more than once is undone to its pre-batch state just once.
+  const handled = new Set();
+  const tx = d.transaction(() => {
+    for (const h of rows) {
+      if (handled.has(h.record_id)) continue;
+      handled.add(h.record_id);
+      const r = revertOne(d, h, actor, newBatch);
+      if (r.skipped) result.skipped.push({ archiveId: r.archiveId, reason: r.skipped });
+      else result.reverted++;
+    }
+  });
+  tx();
+  return result;
+}
+
+/** Undo a single change (or, for a batch member, the whole batch). */
+function revertHistory(historyId, actor) {
+  const d = requireDb();
+  const h = d.prepare('SELECT * FROM record_history WHERE id = ?').get(historyId);
+  if (!h) throw new AppError('NOT_FOUND', 'Der Verlaufseintrag wurde nicht gefunden.');
+  if (h.batch_id) return revertBatch(h.batch_id, actor);
+  let res;
+  const tx = d.transaction(() => { res = revertOne(d, h, actor, null); });
+  tx();
+  if (res.skipped) {
+    throw new AppError('CONFLICT', `Die Änderung kann nicht rückgängig gemacht werden: ${res.skipped}.`);
+  }
+  return { reverted: 1, skipped: [] };
+}
+
+/* ------------------------------------------------------------------ */
+/* Per-user history overview (admin)                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Activity overview for a single user: a summary of how many records they
+ * created / updated / deleted (and how many bulk imports they ran) plus their
+ * most recent operations, with imports collapsed into one entry each.
+ */
+function getUserHistory(userId, { limit } = {}) {
+  const d = requireDb();
+  const user = d.prepare('SELECT id, username, display_name, role, active FROM users WHERE id = ?').get(userId);
+  if (!user) throw new AppError('NOT_FOUND', 'Benutzer nicht gefunden.');
+  const lim = Math.min(Math.max(Number(limit) || 50, 1), 200);
+
+  const summary = d.prepare(`
+    SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN action = 'create' THEN 1 ELSE 0 END) AS creates,
+      SUM(CASE WHEN action = 'update' THEN 1 ELSE 0 END) AS updates,
+      SUM(CASE WHEN action = 'delete' THEN 1 ELSE 0 END) AS deletes,
+      COUNT(DISTINCT batch_id) AS imports,
+      MAX(changed_at) AS last_active
+    FROM record_history WHERE changed_by = ?
+  `).get(userId);
+
+  const ops = d.prepare(`
+    SELECT MAX(h.id) AS rep_id, h.batch_id AS batch_id, COUNT(*) AS cnt
+    FROM record_history h
+    WHERE h.changed_by = ?
+    GROUP BY CASE WHEN h.batch_id IS NULL THEN 'single:' || h.id ELSE 'batch:' || h.batch_id END
+    ORDER BY rep_id DESC
+    LIMIT ?
+  `).all(userId, lim);
+
+  const repStmt = d.prepare(`
+    SELECT h.action, h.archive_id, h.record_id, h.changed_at, h.batch_id,
+           t.name AS doc_type_name, t.icon AS doc_type_icon
+    FROM record_history h
+    LEFT JOIN doc_types t ON t.id = h.doc_type_id
+    WHERE h.id = ?
+  `);
+
+  const recent = ops.map((op) => {
+    const rep = repStmt.get(op.rep_id);
+    return {
+      action: op.batch_id != null ? 'import' : rep.action,
+      archiveId: rep.archive_id,
+      changedAt: rep.changed_at,
+      docTypeName: rep.doc_type_name,
+      docTypeIcon: rep.doc_type_icon,
+      count: op.cnt,
+    };
+  });
+
+  return {
+    user,
+    summary: {
+      total: summary.total || 0,
+      creates: summary.creates || 0,
+      updates: summary.updates || 0,
+      deletes: summary.deletes || 0,
+      imports: summary.imports || 0,
+      lastActive: summary.last_active || null,
+    },
+    recent,
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -779,14 +1069,24 @@ function getStats() {
     WHERE created_at >= datetime('now', '-11 months', 'start of month')
     GROUP BY month ORDER BY month
   `).all();
+  // Collapse bulk imports into a single activity entry (one per batch_id),
+  // while individual edits are listed on their own. The representative row of
+  // each operation is its latest history entry.
   const recentActivity = d.prepare(`
-    SELECT h.action, h.archive_id, h.record_id, h.changed_at,
+    WITH ops AS (
+      SELECT MAX(h.id) AS rep_id, h.batch_id AS batch_id, COUNT(*) AS cnt
+      FROM record_history h
+      GROUP BY CASE WHEN h.batch_id IS NULL THEN 'single:' || h.id ELSE 'batch:' || h.batch_id END
+    )
+    SELECT CASE WHEN ops.batch_id IS NOT NULL THEN 'import' ELSE h.action END AS action,
+           h.archive_id, h.record_id, h.changed_at, ops.cnt AS count,
            COALESCE(u.display_name, h.changed_by_name) AS changed_by_display,
            t.name AS doc_type_name, t.icon AS doc_type_icon
-    FROM record_history h
+    FROM ops
+    JOIN record_history h ON h.id = ops.rep_id
     LEFT JOIN users u ON u.id = h.changed_by
     LEFT JOIN doc_types t ON t.id = h.doc_type_id
-    ORDER BY h.id DESC LIMIT 12
+    ORDER BY ops.rep_id DESC LIMIT 12
   `).all();
   const topContributors = d.prepare(`
     SELECT COALESCE(u.display_name, h.changed_by_name) AS name, COUNT(*) AS count
@@ -823,6 +1123,11 @@ module.exports = {
   updateRecord,
   deleteRecord,
   getRecordHistory,
+  // rewind / per-user history
+  listRewind,
+  revertHistory,
+  revertBatch,
+  getUserHistory,
   getRecordByArchiveId,
   getRecordsDataByArchiveIds,
   findExistingArchiveIds,

@@ -165,25 +165,37 @@ function registerIpcHandlers(getWindow) {
     db.setPassword(id, newPassword);
     return true;
   });
+  handle('users:history', ({ id, limit }) => { requireAdmin(); return db.getUserHistory(id, { limit }); });
 
   /* ----- document types ----- */
 
+  // Reading is open to every member; creating and changing types is reserved
+  // for administrators (normal members have read-only access).
   handle('types:list', () => { requireUser(); return db.listDocTypes(); });
-  handle('types:create', (p) => db.createDocType(p, requireUser()));
-  handle('types:update', ({ id, ...rest }) => { requireUser(); return db.updateDocType(id, rest); });
+  handle('types:create', (p) => db.createDocType(p, requireAdmin()));
+  handle('types:update', ({ id, ...rest }) => { requireAdmin(); return db.updateDocType(id, rest); });
   handle('types:delete', ({ id }) => { requireAdmin(); db.deleteDocType(id); return true; });
 
   /* ----- records ----- */
 
+  // Members may read; only administrators may create, edit or delete records.
   handle('records:list', (p) => { requireUser(); return db.listRecords(p); });
   handle('records:get', ({ id }) => { requireUser(); return db.getRecord(id); });
-  handle('records:create', (p) => db.createRecord(p, requireUser()));
-  handle('records:update', ({ id, ...rest }) => db.updateRecord(id, rest, requireUser()));
+  handle('records:create', (p) => db.createRecord(p, requireAdmin()));
+  handle('records:update', ({ id, ...rest }) => db.updateRecord(id, rest, requireAdmin()));
   handle('records:delete', ({ id, expectedVersion }) => {
-    db.deleteRecord(id, expectedVersion, requireUser());
+    db.deleteRecord(id, expectedVersion, requireAdmin());
     return true;
   });
   handle('records:history', ({ id }) => { requireUser(); return db.getRecordHistory(id); });
+
+  /* ----- rewind: undo recent changes (admin only) ----- */
+
+  handle('rewind:list', ({ limit } = {}) => { requireAdmin(); return db.listRewind({ limit }); });
+  handle('rewind:revert', ({ batchId, historyId }) => {
+    const actor = requireAdmin();
+    return batchId ? db.revertBatch(batchId, actor) : db.revertHistory(historyId, actor);
+  });
 
   /* ----- import (Citavi / Excel / CSV) ----- */
 

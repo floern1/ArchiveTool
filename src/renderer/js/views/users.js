@@ -103,6 +103,47 @@ window.AT = window.AT || {};
     });
   }
 
+  const ACTION_LABEL = { create: 'angelegt', update: 'geändert', delete: 'gelöscht', import: 'importiert' };
+  const ACTION_ICON = { create: '➕', update: '✏️', delete: '🗑️', import: '📥' };
+
+  async function openUserHistory(user) {
+    const data = await apiSafe('users:history', { id: user.id });
+    if (!data) return;
+    const s = data.summary;
+
+    const stat = (value, label) => h('div', { class: 'user-hist-stat' },
+      h('span', { class: 'user-hist-num' }, value.toLocaleString('de-DE')),
+      h('span', { class: 'user-hist-label' }, label));
+
+    const recent = data.recent.length
+      ? data.recent.map((a) => h('div', { class: 'activity-item' },
+          h('div', { class: `activity-dot ${a.action}` }, ACTION_ICON[a.action] || '•'),
+          h('div', { class: 'activity-text' },
+            a.action === 'import'
+              ? [h('strong', {}, (a.count || 1).toLocaleString('de-DE')), ` ${a.count === 1 ? 'Eintrag' : 'Einträge'} importiert `,
+                 a.docTypeName ? h('span', { class: 'cell-soft' }, `(${a.docTypeIcon || ''} ${a.docTypeName})`) : null]
+              : [`${a.docTypeIcon || ''} `, h('span', { class: 'cell-id' }, a.archiveId),
+                 ` ${ACTION_LABEL[a.action] || a.action}`]),
+          h('div', { class: 'activity-time' }, AT.relTime(a.changedAt))))
+      : [h('p', { class: 'cell-soft' }, 'Dieser Benutzer hat noch keine Änderungen vorgenommen.')];
+
+    AT.openModal({
+      title: `Verlauf: ${user.display_name}`,
+      wide: true,
+      body: h('div', {},
+        h('div', { class: 'user-hist-stats' },
+          stat(s.total, 'Änderungen gesamt'),
+          stat(s.creates, 'angelegt'),
+          stat(s.updates, 'geändert'),
+          stat(s.deletes, 'gelöscht'),
+          stat(s.imports, 'Importe')),
+        h('p', { class: 'meta-line' },
+          s.lastActive ? `Zuletzt aktiv: ${AT.fmtDateTime(s.lastActive)}` : 'Noch keine Aktivität.'),
+        h('h3', { style: 'margin:14px 0 4px; font-size:15px' }, 'Letzte Vorgänge'),
+        h('div', { class: 'history-scroll' }, recent)),
+    });
+  }
+
   AT.views = AT.views || {};
   AT.views.users = async function renderUsers(container) {
     const users = await apiSafe('users:list');
@@ -117,6 +158,8 @@ window.AT = window.AT || {};
         : h('span', { class: 'badge red' }, 'deaktiviert')),
       h('td', { class: 'cell-soft' }, AT.fmtDateTime(u.created_at)),
       h('td', { style: 'text-align:right; white-space:nowrap' },
+        h('button', { class: 'btn small', onclick: () => openUserHistory(u) }, '🕘 Verlauf'),
+        ' ',
         h('button', { class: 'btn small', onclick: () => openUserForm(u, () => AT.views.users(container)) }, 'Bearbeiten'),
         ' ',
         h('button', { class: 'btn small', onclick: () => openResetPassword(u) }, 'Passwort'))));

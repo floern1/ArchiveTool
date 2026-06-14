@@ -590,6 +590,113 @@ test('findExistingArchiveIds reports collisions case-insensitively', () => {
   assert.ok(!set.has('nicht-da'));
 });
 
+console.log('\n— Sortierung nach Feldern + Sekundärsortierung —');
+
+test('sort by a JSON field with a secondary tie-break', () => {
+  const t = db.createDocType({
+    name: 'Sortierbar', icon: '🔤',
+    fields: [{ label: 'Autor', field_type: 'text' }, { label: 'Jahr', field_type: 'number' }],
+  }, admin);
+  db.createRecord({ archiveId: 'S-1', docTypeId: t.id, data: { autor: 'Meier', jahr: 2001 } }, admin);
+  db.createRecord({ archiveId: 'S-2', docTypeId: t.id, data: { autor: 'Meier', jahr: 1999 } }, admin);
+  db.createRecord({ archiveId: 'S-3', docTypeId: t.id, data: { autor: 'Albers', jahr: 2010 } }, admin);
+
+  // Primary by author A→Z, secondary by year ascending (tie-break within Meier).
+  const res = db.listRecords({
+    docTypeId: t.id, sort: 'field:autor', dir: 'asc', sort2: 'field:jahr', dir2: 'asc',
+  });
+  assert.deepStrictEqual(res.records.map((r) => r.archive_id), ['S-3', 'S-2', 'S-1']);
+
+  // Descending primary flips the author order.
+  const desc = db.listRecords({ docTypeId: t.id, sort: 'field:autor', dir: 'desc', sort2: 'field:jahr', dir2: 'desc' });
+  assert.deepStrictEqual(desc.records.map((r) => r.archive_id), ['S-1', 'S-2', 'S-3']);
+
+  // An unknown sort key falls back to archive_id (no crash, deterministic).
+  const fallback = db.listRecords({ docTypeId: t.id, sort: 'field:gibtsnicht' });
+  assert.deepStrictEqual(fallback.records.map((r) => r.archive_id), ['S-1', 'S-2', 'S-3']);
+});
+
+console.log('\n— Massenimport als ein Schritt + Rückgängig —');
+
+test('a bulk import shares one batch id and shows as one dashboard activity', () => {
+  const t = db.createDocType({ name: 'Batchtyp', icon: '📦', fields: [{ label: 'Titel', field_type: 'text', required: true }] }, admin);
+  const res = db.importRecords({
+    docTypeId: t.id,
+    rows: [
+      { archiveId: 'BTC-1', data: { titel: 'Eins' }, sourceRowNumber: 2 },
+      { archiveId: 'BTC-2', data: { titel: 'Zwei' }, sourceRowNumber: 3 },
+      { archiveId: 'BTC-3', data: { titel: 'Drei' }, sourceRowNumber: 4 },
+    ],
+    onDuplicate: 'skip',
+  }, admin);
+  assert.strictEqual(res.created, 3);
+  assert.ok(res.batchId, 'import returns a batch id');
+
+  // The whole import collapses into a single recent-activity entry.
+  const stats = db.getStats();
+  const top = stats.recentActivity[0];
+  assert.strictEqual(top.action, 'import');
+  assert.strictEqual(top.count, 3);
+});
+
+test('rewind: undo a whole import deletes all its records', () => {
+  const t = db.createDocType({ name: 'Rückgängigtyp', icon: '📦', fields: [{ label: 'Titel', field_type: 'text', required: true }] }, admin);
+  const res = db.importRecords({
+    docTypeId: t.id,
+    rows: [
+      { archiveId: 'RW-1', data: { titel: 'Eins' }, sourceRowNumber: 2 },
+      { archiveId: 'RW-2', data: { titel: 'Zwei' }, sourceRowNumber: 3 },
+    ],
+    onDuplicate: 'skip',
+  }, admin);
+  assert.strictEqual(db.listRecords({ search: 'RW-' }).total, 2);
+
+  const undo = db.revertBatch(res.batchId, admin);
+  assert.strictEqual(undo.reverted, 2);
+  assert.strictEqual(undo.skipped.length, 0);
+  assert.strictEqual(db.listRecords({ search: 'RW-' }).total, 0, 'both records removed');
+  // The undo itself is logged (as two deletes) and appears in the rewind list.
+  assert.ok(db.listRewind({ limit: 5 }).length >= 1);
+});
+
+test('rewind: undo a single edit restores the previous snapshot', () => {
+  const t = db.createDocType({ name: 'Edittyp', icon: '✏️', fields: [{ label: 'Titel', field_type: 'text', required: true }] }, admin);
+  const rec = db.createRecord({ archiveId: 'ED-1', docTypeId: t.id, data: { titel: 'Original' } }, admin);
+  db.updateRecord(rec.id, { archiveId: 'ED-1', data: { titel: 'Geändert' }, expectedVersion: rec.version }, member);
+
+  // The newest rewind op for this record is the update – undo it.
+  const updateOp = db.listRewind({ limit: 50 }).find((o) => o.archiveId === 'ED-1');
+  assert.ok(updateOp, 'edit appears in the rewind list');
+  assert.strictEqual(updateOp.revertableCount, 1);
+  db.revertHistory(updateOp.historyId, admin);
+  assert.strictEqual(db.getRecord(rec.id).data.titel, 'Original', 'previous value restored');
+});
+
+test('rewind refuses to undo a change the record has moved past', () => {
+  const t = db.createDocType({ name: 'Konflikttyp', icon: '✏️', fields: [{ label: 'Titel', field_type: 'text', required: true }] }, admin);
+  const rec = db.createRecord({ archiveId: 'KF-1', docTypeId: t.id, data: { titel: 'A' } }, admin);
+  // Grab the create history entry, then change the record again so it is no longer at that state.
+  const createOp = db.listRewind({ limit: 50 }).find((o) => o.archiveId === 'KF-1');
+  db.updateRecord(rec.id, { archiveId: 'KF-1', data: { titel: 'B' }, expectedVersion: rec.version }, admin);
+  expectError('CONFLICT', () => db.revertHistory(createOp.historyId, admin));
+});
+
+console.log('\n— Benutzer-Verlauf (Admin) —');
+
+test('per-user history summarises a user’s changes', () => {
+  const u = db.createUser({ username: 'verlaufnutzer', displayName: 'Verlauf Nutzer', password: 'geheim123', role: 'member' });
+  const t = db.createDocType({ name: 'Verlauftyp', icon: '🗂️', fields: [{ label: 'Titel', field_type: 'text', required: true }] }, admin);
+  const r = db.createRecord({ archiveId: 'VH-1', docTypeId: t.id, data: { titel: 'X' } }, u);
+  db.updateRecord(r.id, { archiveId: 'VH-1', data: { titel: 'Y' }, expectedVersion: r.version }, u);
+
+  const hist = db.getUserHistory(u.id);
+  assert.strictEqual(hist.user.username, 'verlaufnutzer');
+  assert.strictEqual(hist.summary.creates, 1);
+  assert.strictEqual(hist.summary.updates, 1);
+  assert.strictEqual(hist.summary.total, 2);
+  assert.ok(hist.recent.length >= 2);
+});
+
 console.log('\n— Parallelzugriff (zweite Verbindung) —');
 
 test('write from a second connection is detected as conflict', () => {

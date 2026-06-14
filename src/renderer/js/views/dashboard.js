@@ -8,7 +8,7 @@ window.AT = window.AT || {};
   const { h } = AT;
 
   const ACTION_LABEL = { create: 'angelegt', update: 'geändert', delete: 'gelöscht' };
-  const ACTION_ICON = { create: '➕', update: '✏️', delete: '🗑️' };
+  const ACTION_ICON = { create: '➕', update: '✏️', delete: '🗑️', import: '📥' };
 
   const MONTH_NAMES = ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez'];
 
@@ -62,12 +62,27 @@ window.AT = window.AT || {};
     }
     return items.map((a) => h('div', { class: 'activity-item' },
       h('div', { class: `activity-dot ${a.action}` }, ACTION_ICON[a.action] || '•'),
-      h('div', { class: 'activity-text' },
-        h('strong', {}, a.changed_by_display || 'Unbekannt'),
-        ` hat ${a.doc_type_icon || ''} `,
-        h('span', { class: 'cell-id' }, a.archive_id),
-        ` ${ACTION_LABEL[a.action] || a.action}`),
+      h('div', { class: 'activity-text' }, activityText(a)),
       h('div', { class: 'activity-time' }, AT.relTime(a.changed_at))));
+  }
+
+  // A bulk import is collapsed into one line ("hat 1.234 Einträge importiert"),
+  // individual edits keep naming the affected archive entry.
+  function activityText(a) {
+    if (a.action === 'import') {
+      return [
+        h('strong', {}, a.changed_by_display || 'Unbekannt'),
+        ` hat ${a.doc_type_icon || '📥'} `,
+        h('strong', {}, (a.count || 1).toLocaleString('de-DE')),
+        ` ${a.count === 1 ? 'Eintrag' : 'Einträge'} importiert`,
+      ];
+    }
+    return [
+      h('strong', {}, a.changed_by_display || 'Unbekannt'),
+      ` hat ${a.doc_type_icon || ''} `,
+      h('span', { class: 'cell-id' }, a.archive_id),
+      ` ${ACTION_LABEL[a.action] || a.action}`,
+    ];
   }
 
   AT.views = AT.views || {};

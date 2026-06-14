@@ -9,6 +9,9 @@ window.AT = window.AT || {};
   AT.$ = (sel, root) => (root || document).querySelector(sel);
   AT.$$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
 
+  /** Is the currently logged-in user an administrator? */
+  AT.isAdmin = () => !!(AT.state && AT.state.currentUser && AT.state.currentUser.role === 'admin');
+
   /** Create an element: h('div', {class:'x', onclick:fn}, child1, 'text', ...) */
   AT.h = function h(tag, attrs, ...children) {
     const el = document.createElement(tag);

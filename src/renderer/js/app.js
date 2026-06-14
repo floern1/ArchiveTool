@@ -124,7 +124,7 @@ window.AT = window.AT || {};
     $('#sidebar-db').title = AT.state.dbPath || '';
     AT.$$('.admin-only').forEach((el) => el.classList.toggle('hidden', user.role !== 'admin'));
     showScreen('main');
-    navigate(['users', 'import'].includes(currentView) && user.role !== 'admin' ? 'dashboard' : currentView);
+    navigate(['users', 'import', 'rewind'].includes(currentView) && user.role !== 'admin' ? 'dashboard' : currentView);
   }
 
   /* ---------------- state handling ---------------- */

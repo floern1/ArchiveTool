@@ -161,10 +161,10 @@ window.AT = window.AT || {};
         t.fields.map((f) => h('span', { class: 'badge', title: AT.FIELD_TYPE_LABELS[f.field_type] },
           f.label, f.required ? ' *' : ''))),
       h('div', { class: 'type-card-actions' },
-        h('button', {
+        isAdmin ? h('button', {
           class: 'btn small',
           onclick: () => openTypeEditor(t, () => AT.views.doctypes(container)),
-        }, '✏️ Bearbeiten'),
+        }, '✏️ Bearbeiten') : null,
         isAdmin ? h('button', {
           class: 'btn small danger',
           disabled: t.recordCount > 0,
@@ -193,10 +193,10 @@ window.AT = window.AT || {};
           h('p', { class: 'view-sub' },
             'Definieren Sie flexibel, welche Eingabefelder ein Eintrag je Typ hat.')),
         h('div', { class: 'spacer' }),
-        h('button', {
+        isAdmin ? h('button', {
           class: 'btn primary',
           onclick: () => openTypeEditor(null, () => AT.views.doctypes(container)),
-        }, '＋ Neuer Dokumenttyp')),
+        }, '＋ Neuer Dokumenttyp') : null),
       types.length === 0
         ? h('div', { class: 'card' },
             h('div', { class: 'empty-state' },

@@ -13,6 +13,10 @@ damit arbeiten.
 - **Benutzerkonten mit Passwort** – jedes Vereinsmitglied meldet sich mit
   eigenem Konto an (Rollen: Administrator / Mitglied). Passwörter werden
   ausschließlich als scrypt-Hash gespeichert.
+- **Rechte nach Rolle** – das Anlegen, Bearbeiten und Löschen von Einträgen
+  und Dokumenttypen sowie der Import sind **Administratoren** vorbehalten;
+  normale Mitglieder haben **lesenden Zugriff** (Suchen, Filtern, Sortieren,
+  Detail- und Historienansicht). Die Rechteprüfung erfolgt im Main-Prozess.
 - **Schutz vor gleichzeitigem Schreiben** – jeder Eintrag trägt eine
   Versionsnummer (optimistisches Locking). Speichern zwei Mitglieder denselben
   Eintrag, bekommt das zweite eine verständliche Konfliktmeldung („zwischenzeitlich
@@ -32,7 +36,16 @@ damit arbeiten.
   alphanumerische ID (z. B. `FOTO-1952-001`); Eindeutigkeit wird von der
   Datenbank erzwungen (Groß-/Kleinschreibung wird ignoriert).
 - **Standard-Datenbankfunktionen** – Volltextsuche über alle Felder, Filter je
-  Eingabefeld, Sortierung, Seitenweise Anzeige, Anlegen, Bearbeiten, Löschen.
+  Eingabefeld, Anlegen, Bearbeiten, Löschen. **Sortierung nach jedem
+  Eingabefeld** (sowie Archiv-ID und Zeitstempeln) mit frei wählbarer Richtung
+  und einer **sekundären Sortierung als Tie-Break** bei Gleichstand. Die
+  **Seitengröße** der Listenanzeige ist wählbar (25–500 Einträge pro Seite).
+- **Rückgängig-Menü** (Administratoren) – die letzten Änderungen im Überblick;
+  einzelne Bearbeitungen, Anlagen und Löschungen lassen sich gezielt
+  zurücknehmen, ein **Import wird dabei als ein Schritt** vollständig
+  rückgängig gemacht. Jede Rücknahme wird selbst protokolliert und kann erneut
+  rückgängig gemacht werden; bereits zwischenzeitlich geänderte Einträge werden
+  zum Schutz übersprungen.
 - **Import bestehender Bestände** (Administratoren) – Tabellen-Exporte aus
   *Citavi* o. Ä. als **Excel (.xlsx)** oder **CSV** übernehmen. Ein Assistent
   führt in drei Schritten durch den Import:
@@ -63,7 +76,12 @@ damit arbeiten.
   Der Import erfolgt ohne externe Bibliotheken: `.xlsx`-Dateien (ein ZIP aus
   XML-Teilen) werden mit Bordmitteln gelesen.
 - **Dashboard** – Kennzahlen, Einträge pro Dokumenttyp, Neuzugänge der letzten
-  12 Monate, aktivste Mitglieder und die letzten Aktivitäten.
+  12 Monate, aktivste Mitglieder und die letzten Aktivitäten. Ein **Bulk-Import
+  erscheint dabei als ein einziger Eintrag** in der Aktivitätsliste (statt einer
+  Zeile je importiertem Datensatz).
+- **Benutzer-Verlauf** (Administratoren) – pro Konto ein Überblick der
+  vorgenommenen Änderungen (angelegt / geändert / gelöscht, Anzahl Importe,
+  letzte Aktivität) samt der jüngsten Vorgänge.
 - **Moderne Oberfläche** – Electron-Anwendung mit deutschsprachiger,
   aufgeräumter Benutzeroberfläche.
 
@@ -131,7 +149,9 @@ automatisch und legt die Installer als Artefakte ab.
 Datenmodell (vereinfacht): `users`, `doc_types` + `doc_type_fields`
 (Felddefinitionen je Typ), `records` (Eintrag mit eindeutiger `archive_id`,
 JSON-Felddaten und `version`-Zähler) sowie `record_history`
-(Schnappschüsse aller Änderungen mit Benutzer und Zeitstempel).
+(Schnappschüsse aller Änderungen mit Benutzer und Zeitstempel; Änderungen eines
+Imports teilen sich eine `batch_id`, damit Dashboard und Rückgängig-Menü sie als
+einen Schritt behandeln).
 
 ## Lizenz
 
