@@ -526,6 +526,8 @@ test('groupDuplicateRows / mostCompleteIndex / mergeData', () => {
 
   const recs = [{ titel: 'Werk A', autor: 'Meier' }, { titel: 'Werk A', jahr: 1950 }];
   assert.strictEqual(importer.mostCompleteIndex(recs), 0);
+  assert.strictEqual(importer.mostCompleteIndex([]), 0, 'empty input is handled');
+  assert.strictEqual(importer.mostCompleteIndex([{}, { a: 1, b: 2 }, { a: 1 }]), 1);
   // master 0 wins, empty fields filled from the other → union
   assert.deepStrictEqual(importer.mergeData(recs, 0), { titel: 'Werk A', autor: 'Meier', jahr: 1950 });
   // field override: take „jahr“ from record 1 explicitly (already there), title from record 1

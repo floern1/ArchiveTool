@@ -506,6 +506,14 @@ window.AT = window.AT || {};
     state.decisions = { within, collisions };
   }
 
+  // True when the duplicate key includes the archive-id source column: then all
+  // members of a group share the same archive id and "keep all" is impossible.
+  function idColumnInKey() {
+    if (state.archiveId.mode !== 'column') return false;
+    const key = state.dedupeColumns.length ? state.dedupeColumns : [state.archiveId.index];
+    return key.includes(state.archiveId.index);
+  }
+
   const normVal = (v) => String(v == null ? '' : v).trim().toLowerCase();
   function shortVal(v) {
     if (v === undefined || v === null || v === '') return '(leer)';
@@ -526,6 +534,8 @@ window.AT = window.AT || {};
 
   function renderWithinGroup(g) {
     const dec = state.decisions.within[g.key];
+    const canKeepAll = !idColumnInKey();
+    if (!canKeepAll && dec.action === 'keepAll') dec.action = 'merge';
     const body = h('div', {});
 
     function renderBody() {
@@ -572,7 +582,7 @@ window.AT = window.AT || {};
       onchange: (e) => { dec.action = e.target.value; renderBody(); },
     },
       h('option', { value: 'merge', selected: dec.action === 'merge' }, 'Zusammenführen (ein Eintrag)'),
-      h('option', { value: 'keepAll', selected: dec.action === 'keepAll' }, 'Alle behalten (nicht zusammenführen)'));
+      canKeepAll ? h('option', { value: 'keepAll', selected: dec.action === 'keepAll' }, 'Alle behalten (nicht zusammenführen)') : null);
 
     renderBody();
     return h('div', { class: 'card import-merge-card' },
@@ -580,6 +590,8 @@ window.AT = window.AT || {};
         h('div', {}, h('strong', {}, g.display || '(leer)'), ' ', h('span', { class: 'badge' }, `${g.members.length} Zeilen`)),
         h('div', { class: 'spacer' }),
         actionSel),
+      !canKeepAll ? h('p', { class: 'meta-line', style: 'margin:6px 0 0' },
+        'Alle Einträge dieser Gruppe haben dieselbe Archiv-ID – sie lassen sich nur zusammenführen.') : null,
       body);
   }
 
@@ -649,8 +661,9 @@ window.AT = window.AT || {};
         `Dubletten in der Datei (${res.withinTotal}${res.truncated ? ', gekürzt' : ''})`, renderWithinGroup));
     }
     if (state.onDuplicate === 'manual' && res.collisions.length) {
+      const total = res.collisionsTotal != null ? res.collisionsTotal : res.collisions.length;
       sections.push(pager(res.collisions, 'collisions',
-        `Kollisionen mit der Datenbank (${res.collisions.length})`, renderCollision));
+        `Kollisionen mit der Datenbank (${total})`, renderCollision));
     }
 
     container.replaceChildren(
@@ -662,7 +675,9 @@ window.AT = window.AT || {};
           'Alle Gruppen sind mit einem Auto-Vorschlag vorbelegt (Master = am besten befüllt). ',
           'Passen Sie nur an, was Sie möchten – der Rest wird automatisch übernommen.'),
         res.truncated ? h('p', { class: 'meta-line' },
-          `Hinweis: Es werden die ersten ${res.within.length} Gruppen zur Bearbeitung angezeigt; weitere werden automatisch (am besten befüllt) zusammengeführt.`) : null),
+          `Hinweis: Es werden die ersten ${res.within.length} Gruppen zur Bearbeitung angezeigt; weitere werden automatisch (am besten befüllt) zusammengeführt.`) : null,
+        res.truncatedCollisions ? h('p', { class: 'meta-line' },
+          `Hinweis: Es werden die ersten ${res.collisions.length} von ${res.collisionsTotal} Datenbank-Kollisionen angezeigt; weitere werden automatisch übersprungen.`) : null),
       h('div', {}, sections),
       h('div', { class: 'import-actions' },
         h('button', { class: 'btn', onclick: () => { state.step = 3; render(); } }, '← Zurück'),

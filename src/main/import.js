@@ -589,6 +589,7 @@ function groupDuplicateRows(dataRows, keyIndices) {
 
 /** Index of the record with the most populated fields (ties → first). */
 function mostCompleteIndex(records) {
+  if (!records || records.length === 0) return 0;
   let best = 0;
   let bestN = -1;
   records.forEach((r, i) => {

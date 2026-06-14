@@ -343,12 +343,16 @@ function registerIpcHandlers(getWindow) {
     const existingIds = db.findExistingArchiveIds(built.map((r) => r.archiveId));
     const seen = new Set();
     const collisions = [];
+    let collisionsTotal = 0;
     for (const r of built) {
       if (!r.archiveId) continue;
       const low = r.archiveId.toLowerCase();
-      if (existingIds.has(low) && !seen.has(low) && collisions.length < RESOLUTION_CAP) {
-        const ex = db.getRecordByArchiveId(r.archiveId);
-        collisions.push({ archiveId: r.archiveId, rowNumber: r.sourceRowNumber, incoming: r.data, existing: ex ? ex.data : {} });
+      if (existingIds.has(low) && !seen.has(low)) {
+        collisionsTotal++;
+        if (collisions.length < RESOLUTION_CAP) {
+          const ex = db.getRecordByArchiveId(r.archiveId);
+          collisions.push({ archiveId: r.archiveId, rowNumber: r.sourceRowNumber, incoming: r.data, existing: ex ? ex.data : {} });
+        }
       }
       seen.add(low);
     }
@@ -358,7 +362,9 @@ function registerIpcHandlers(getWindow) {
       within,
       withinTotal: groups.length,
       collisions,
+      collisionsTotal,
       truncated: groups.length > RESOLUTION_CAP,
+      truncatedCollisions: collisionsTotal > RESOLUTION_CAP,
     };
   });
 
@@ -434,9 +440,13 @@ function registerIpcHandlers(getWindow) {
         }
         const masterRow = built[g.members[masterPos]];
         out.push({ archiveId: masterRow.archiveId, data: importer.mergeData(memberData, masterPos, overrides), sourceRowNumber: masterRow.sourceRowNumber });
-        for (let k = 0; k < g.members.length - 1; k++) {
-          droppedDupes.push({ archiveId: masterRow.archiveId, row: g.members[k] + 2, reason: 'Mit Master-Eintrag zusammengeführt (Datei-Dublette)' });
-        }
+        // Report every member except the kept master as merged-away (using the
+        // correct source row numbers, regardless of which member is master).
+        g.members.forEach((mi, k) => {
+          if (k !== masterPos) {
+            droppedDupes.push({ archiveId: masterRow.archiveId, row: mi + 2, reason: 'Mit Master-Eintrag zusammengeführt (Datei-Dublette)' });
+          }
+        });
         mergedCount++;
       }
       built.forEach((r, i) => { if (!consumed.has(i)) out.push(r); });
@@ -474,6 +484,9 @@ function registerIpcHandlers(getWindow) {
               for (const [f, src] of Object.entries(dec.overrides)) overrides[f] = src === 'incoming' ? 1 : 0;
             }
             // existing record is the master (index 0); imported values are index 1.
+            // The row already carries the final per-field decision; the later
+            // 'overwrite' path in importRecords re-merges {existing, row.data}
+            // which is idempotent here (row.data wins for every key it holds).
             row.data = importer.mergeData([ex.data, row.data], 0, overrides);
             perId[low] = 'overwrite';
           }
