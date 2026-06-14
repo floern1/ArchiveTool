@@ -318,6 +318,278 @@ test('stats are consistent', () => {
   assert.ok(stats.recentActivity[0].changed_by_display);
 });
 
+console.log('\n— Import: Datei-Parsing & Hilfsfunktionen —');
+
+const importer = require('../src/main/import');
+const zlib = require('zlib');
+
+/* Minimal STORE-method ZIP writer to build a synthetic .xlsx in memory. */
+function crc32(buf) {
+  let c = ~0;
+  for (let i = 0; i < buf.length; i++) {
+    c ^= buf[i];
+    for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xEDB88320 & -(c & 1));
+  }
+  return (~c) >>> 0;
+}
+function makeXlsx(files) {
+  const locals = [];
+  const central = [];
+  let offset = 0;
+  for (const [name, content] of files) {
+    const data = Buffer.from(content, 'utf8');
+    const nameBuf = Buffer.from(name, 'utf8');
+    const crc = crc32(data);
+    const lfh = Buffer.alloc(30);
+    lfh.writeUInt32LE(0x04034b50, 0); lfh.writeUInt16LE(20, 4);
+    lfh.writeUInt32LE(crc, 14); lfh.writeUInt32LE(data.length, 18); lfh.writeUInt32LE(data.length, 22);
+    lfh.writeUInt16LE(nameBuf.length, 26);
+    const rec = Buffer.concat([lfh, nameBuf, data]);
+    locals.push(rec);
+    const cd = Buffer.alloc(46);
+    cd.writeUInt32LE(0x02014b50, 0); cd.writeUInt16LE(20, 4); cd.writeUInt16LE(20, 6);
+    cd.writeUInt32LE(crc, 16); cd.writeUInt32LE(data.length, 20); cd.writeUInt32LE(data.length, 24);
+    cd.writeUInt16LE(nameBuf.length, 28); cd.writeUInt32LE(offset, 42);
+    central.push(Buffer.concat([cd, nameBuf]));
+    offset += rec.length;
+  }
+  const localBlob = Buffer.concat(locals);
+  const centralBlob = Buffer.concat(central);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(files.length, 8); eocd.writeUInt16LE(files.length, 10);
+  eocd.writeUInt32LE(centralBlob.length, 12); eocd.writeUInt32LE(localBlob.length, 16);
+  return Buffer.concat([localBlob, centralBlob, eocd]);
+}
+
+test('reads a synthetic .xlsx (shared/rich/inline strings + numbers)', () => {
+  const shared = '<sst><si><t>Titel</t></si><si><t>Autor</t></si><si><t>Jahr</t></si>'
+    + '<si><t>Dorfchronik</t></si><si><t>H. Meier</t></si>'
+    + '<si><r><t>Mehr</t></r><r><t>zeilig &amp; toll</t></r></si></sst>';
+  const sheet = '<worksheet><sheetData>'
+    + '<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="s"><v>2</v></c></row>'
+    + '<row r="2"><c r="A2" t="s"><v>3</v></c><c r="B2" t="s"><v>4</v></c><c r="C2"><v>1952</v></c></row>'
+    + '<row r="3"><c r="A3" t="s"><v>5</v></c><c r="C3"><v>2001</v></c></row>'
+    + '</sheetData></worksheet>';
+  const xlsxPath = path.join(tmpDir, 'fixture.xlsx');
+  fs.writeFileSync(xlsxPath, makeXlsx([
+    ['xl/workbook.xml', '<workbook xmlns:r="x"><sheets><sheet name="Org" sheetId="1" r:id="rId1"/></sheets></workbook>'],
+    ['xl/_rels/workbook.xml.rels', '<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>'],
+    ['xl/sharedStrings.xml', shared],
+    ['xl/worksheets/sheet1.xml', sheet],
+  ]));
+  const { sheetName, rows } = importer.readWorkbook(xlsxPath);
+  assert.strictEqual(sheetName, 'Org');
+  assert.deepStrictEqual(rows[0], ['Titel', 'Autor', 'Jahr']);
+  assert.deepStrictEqual(rows[1], ['Dorfchronik', 'H. Meier', '1952']);
+  assert.deepStrictEqual(rows[2], ['Mehrzeilig & toll', '', '2001']);
+
+  const cols = importer.analyzeColumns(rows);
+  assert.strictEqual(cols[1].pct, 50, 'Autor in 1 von 2 Datenzeilen befüllt');
+  assert.strictEqual(cols[2].inferredType, 'number');
+});
+
+test('field-type inference (date strings, header-aware Excel serials, years stay numbers)', () => {
+  assert.strictEqual(importer.inferFieldType(['2019-09-23', '2020-01-01'], 'Datum'), 'date');
+  assert.strictEqual(importer.inferFieldType(['04.05.2020'], 'Erfasst am'), 'date');
+  // serial numbers only count as dates when the header looks like a date column
+  assert.strictEqual(importer.inferFieldType(['43734.37', '42411.7'], 'Erstveröffentlichung'), 'date');
+  assert.strictEqual(importer.inferFieldType(['43734.37', '42411.7'], 'Einheitssachtitel'), 'number');
+  // year columns must NOT become dates
+  assert.strictEqual(importer.inferFieldType(['1929', '2009'], 'Jahr ermittelt'), 'number');
+  assert.strictEqual(importer.inferFieldType(['Elberfeld', 'Köln'], 'Ort'), 'text');
+});
+
+test('CSV parsing with delimiter detection and quotes', () => {
+  const rows = importer.parseCsv('a;b;c\n"x;1";"y\ny";z\n');
+  assert.deepStrictEqual(rows[0], ['a', 'b', 'c']);
+  assert.deepStrictEqual(rows[1], ['x;1', 'y\ny', 'z']);
+});
+
+test('value coercion (number, date incl. Excel serial, boolean)', () => {
+  assert.strictEqual(importer.coerceValue('19,5', 'number'), 19.5);
+  assert.strictEqual(importer.coerceValue('ja', 'boolean'), true);
+  assert.strictEqual(importer.coerceValue('04.05.2020', 'date'), '2020-05-04');
+  assert.strictEqual(importer.coerceValue('43831', 'date'), '2020-01-01'); // Excel serial
+  assert.strictEqual(importer.coerceValue('', 'text'), undefined);
+});
+
+test('archive id sanitisation', () => {
+  assert.strictEqual(importer.sanitizeArchiveId('FOTO-1952-001'), 'FOTO-1952-001');
+  assert.strictEqual(importer.sanitizeArchiveId('  16158 '), '16158');
+  assert.strictEqual(importer.sanitizeArchiveId('A 0_00; Z'), 'A 0_00- Z');
+  assert.strictEqual(importer.sanitizeArchiveId('%%%'), '');
+});
+
+test('buildImportRows + duplicate detection', () => {
+  const data = [['Meier', '1952'], ['Meier', '1952'], ['', '1960']];
+  const eff = [{ index: 0, name: 'autor', fieldType: 'text' }, { index: 1, name: 'jahr', fieldType: 'number' }];
+  const built = importer.buildImportRows(data, eff, { mode: 'column', index: 0, prefix: 'IMP-' });
+  assert.strictEqual(built[0].archiveId, 'Meier');
+  assert.strictEqual(built[2].archiveId, 'IMP-00001', 'empty id falls back to generated');
+  assert.deepStrictEqual(built[0].data, { autor: 'Meier', jahr: 1952 });
+  const dup = importer.findDuplicates(data, [0, 1]);
+  assert.strictEqual(dup.duplicateGroups, 1);
+  assert.strictEqual(dup.duplicateRows, 1);
+});
+
+console.log('\n— Import: Massenimport in die Datenbank —');
+
+let importType;
+
+test('bulk import: created / skipped (dup+collision) / failed', () => {
+  importType = db.createDocType({
+    name: 'Importtyp', icon: '📥',
+    fields: [{ label: 'Titel', field_type: 'text', required: true }, { label: 'Jahr', field_type: 'number' }],
+  }, admin);
+  db.createRecord({ archiveId: 'IMP-100', docTypeId: importType.id, data: { titel: 'Bestehend' } }, admin);
+
+  const rows = [
+    { archiveId: 'IMP-001', data: { titel: 'Eins', jahr: 1990 }, sourceRowNumber: 2 },
+    { archiveId: 'IMP-001', data: { titel: 'Eins-Dup' }, sourceRowNumber: 3 },   // duplicate within file
+    { archiveId: 'IMP-100', data: { titel: 'Kollision' }, sourceRowNumber: 4 },  // already in db
+    { archiveId: 'IMP-002', data: { jahr: 1991 }, sourceRowNumber: 5 },          // missing required title
+    { archiveId: 'IMP-003', data: { titel: 'Drei' }, sourceRowNumber: 6 },
+  ];
+  const res = db.importRecords({ docTypeId: importType.id, rows, onDuplicate: 'skip' }, member);
+  assert.strictEqual(res.created, 2, 'IMP-001 and IMP-003');
+  assert.strictEqual(res.updated, 0);
+  assert.strictEqual(res.skipped.length, 2, 'within-file duplicate + existing collision');
+  assert.strictEqual(res.failed.length, 1, 'missing required field');
+  assert.ok(db.listRecords({ search: 'IMP-003' }).total === 1);
+});
+
+test('bulk import overwrite merges into existing record', () => {
+  const res = db.importRecords({
+    docTypeId: importType.id,
+    rows: [{ archiveId: 'IMP-100', data: { jahr: 2024 }, sourceRowNumber: 2 }],
+    onDuplicate: 'overwrite',
+  }, member);
+  assert.strictEqual(res.updated, 1);
+  const found = db.listRecords({ search: 'IMP-100' }).records[0];
+  const full = db.getRecord(found.id);
+  assert.strictEqual(full.data.titel, 'Bestehend', 'existing field kept');
+  assert.strictEqual(full.data.jahr, 2024, 'imported field merged in');
+});
+
+test('bulk import overwrite preserves data of fields removed from the type', () => {
+  // A record may carry values for fields that were later dropped from the type;
+  // updateDocType keeps those in the JSON snapshot. An overwrite-import must not
+  // silently discard them.
+  const t = db.createDocType({
+    name: 'Bestandskartei', icon: '📥',
+    fields: [{ label: 'Titel', field_type: 'text', required: true }, { label: 'Altfeld', field_type: 'text' }],
+  }, admin);
+  db.createRecord({ archiveId: 'KART-1', docTypeId: t.id, data: { titel: 'Alt', altfeld: 'bewahren' } }, admin);
+  // Drop "altfeld" from the type definition; its value survives in the record.
+  db.updateDocType(t.id, { name: 'Bestandskartei', icon: '📥', fields: [{ name: 'titel', label: 'Titel', field_type: 'text', required: true }] });
+
+  const res = db.importRecords({
+    docTypeId: t.id,
+    rows: [{ archiveId: 'KART-1', data: { titel: 'Neu' }, sourceRowNumber: 2 }],
+    onDuplicate: 'overwrite',
+  }, member);
+  assert.strictEqual(res.updated, 1);
+  const full = db.getRecord(db.listRecords({ search: 'KART-1' }).records[0].id);
+  assert.strictEqual(full.data.titel, 'Neu', 'imported value applied');
+  assert.strictEqual(full.data.altfeld, 'bewahren', 'value of removed field preserved');
+});
+
+test('withinFileDropIndices resolves redundant rows (first / most complete)', () => {
+  const data = [['Meier', '1952'], ['Meier', '1952'], ['Schulz', '1960'], ['Meier', '1952']];
+  // keep first of each key group → drop the later Meier/1952 rows (1 and 3)
+  const first = importer.withinFileDropIndices(data, [0, 1]);
+  assert.deepStrictEqual([...first].sort((a, b) => a - b), [1, 3]);
+  // weighted: keep the most complete row (index 1) → drop 0 and 3
+  const mostComplete = importer.withinFileDropIndices(data, [0, 1], [1, 3, 1, 2]);
+  assert.deepStrictEqual([...mostComplete].sort((a, b) => a - b), [0, 3]);
+  // rows whose key columns are all empty are never treated as duplicates
+  assert.strictEqual(importer.withinFileDropIndices([['', ''], ['', '']], [0, 1]).size, 0);
+});
+
+test('within-file dedup keeps one record per key before import', () => {
+  const t = db.createDocType({ name: 'Dedup', icon: '📥', fields: [{ label: 'Titel', field_type: 'text', required: true }] }, admin);
+  const data = [['Werk A'], ['Werk A'], ['Werk B']]; // rows 0 and 1 are redundant by column 0
+  const eff = [{ index: 0, name: 'titel', fieldType: 'text' }];
+  const built = importer.buildImportRows(data, eff, { mode: 'generate', prefix: 'DD-' }); // distinct generated ids
+  const drop = importer.withinFileDropIndices(data, [0]);
+  const keep = built.filter((_, i) => !drop.has(i));
+  const res = db.importRecords({ docTypeId: t.id, rows: keep, onDuplicate: 'skip' }, admin);
+  assert.strictEqual(res.created, 2, 'one „Werk A“ plus „Werk B“');
+});
+
+test('groupDuplicateRows / mostCompleteIndex / mergeData', () => {
+  const data = [['Werk A', 'Meier', ''], ['Werk A', '', '1950'], ['Werk B', 'Schulz', '1960']];
+  const groups = importer.groupDuplicateRows(data, [0]);
+  assert.strictEqual(groups.length, 1, 'only „Werk A“ is a duplicate group');
+  assert.deepStrictEqual(groups[0].members, [0, 1]);
+
+  const recs = [{ titel: 'Werk A', autor: 'Meier' }, { titel: 'Werk A', jahr: 1950 }];
+  assert.strictEqual(importer.mostCompleteIndex(recs), 0);
+  assert.strictEqual(importer.mostCompleteIndex([]), 0, 'empty input is handled');
+  assert.strictEqual(importer.mostCompleteIndex([{}, { a: 1, b: 2 }, { a: 1 }]), 1);
+  // master 0 wins, empty fields filled from the other → union
+  assert.deepStrictEqual(importer.mergeData(recs, 0), { titel: 'Werk A', autor: 'Meier', jahr: 1950 });
+  // field override: take „jahr“ from record 1 explicitly (already there), title from record 1
+  assert.deepStrictEqual(importer.mergeData([{ titel: 'A', autor: 'X' }, { titel: 'B' }], 0, { titel: 1 }), { titel: 'B', autor: 'X' });
+});
+
+test('differingFieldNames flags only fields that actually differ', () => {
+  const names = ['a', 'b', 'c'];
+  assert.deepStrictEqual(importer.differingFieldNames(names, [{ a: 1, b: 'x' }, { a: 1, b: 'y' }]), ['b']);
+  assert.deepStrictEqual(importer.differingFieldNames(names, [{ a: 1 }, { a: 1 }]), [], 'identical → none');
+  assert.deepStrictEqual(importer.differingFieldNames(['c'], [{}, { c: 'v' }]), ['c'], 'empty vs filled differs');
+});
+
+test('manual within-file merge produces one record per group', () => {
+  const t = db.createDocType({ name: 'MergeTyp', icon: '📥', fields: [
+    { label: 'Titel', field_type: 'text', required: true }, { label: 'Autor', field_type: 'text' }, { label: 'Jahr', field_type: 'number' },
+  ] }, admin);
+  // two redundant rows (same title) with complementary fields + a unique row
+  const eff = [{ index: 0, name: 'titel', fieldType: 'text' }, { index: 1, name: 'autor', fieldType: 'text' }, { index: 2, name: 'jahr', fieldType: 'number' }];
+  const data = [['Werk A', 'Meier', ''], ['Werk A', '', '1950'], ['Werk B', 'Schulz', '1961']];
+  const built = importer.buildImportRows(data, eff, { mode: 'generate', prefix: 'MG-' });
+  const groups = importer.groupDuplicateRows(data, [0]);
+  const resolved = [];
+  const consumed = new Set();
+  for (const g of groups) {
+    g.members.forEach((i) => consumed.add(i));
+    const master = importer.mostCompleteIndex(g.members.map((i) => built[i].data));
+    resolved.push({ archiveId: built[g.members[master]].archiveId, data: importer.mergeData(g.members.map((i) => built[i].data), master) });
+  }
+  built.forEach((r, i) => { if (!consumed.has(i)) resolved.push(r); });
+  const res = db.importRecords({ docTypeId: t.id, rows: resolved, onDuplicate: 'skip' }, admin);
+  assert.strictEqual(res.created, 2, 'merged „Werk A“ + „Werk B“');
+  const a = db.getRecordByArchiveId(built[0].archiveId); // the merged master record
+  assert.strictEqual(a.data.titel, 'Werk A');
+  assert.strictEqual(a.data.autor, 'Meier', 'autor from row 1');
+  assert.strictEqual(a.data.jahr, 1950, 'jahr filled from row 2');
+});
+
+test('per-id collision override (perId) beats the global strategy', () => {
+  const t = db.createDocType({ name: 'PerIdTyp', icon: '📥', fields: [{ label: 'Titel', field_type: 'text', required: true }] }, admin);
+  db.createRecord({ archiveId: 'PID-1', docTypeId: t.id, data: { titel: 'Alt' } }, admin);
+  db.createRecord({ archiveId: 'PID-2', docTypeId: t.id, data: { titel: 'Alt2' } }, admin);
+  // global skip, but PID-1 individually overwritten
+  const res = db.importRecords({
+    docTypeId: t.id,
+    rows: [{ archiveId: 'PID-1', data: { titel: 'Neu' }, sourceRowNumber: 2 }, { archiveId: 'PID-2', data: { titel: 'Neu2' }, sourceRowNumber: 3 }],
+    onDuplicate: 'skip',
+    perId: { 'pid-1': 'overwrite' },
+  }, admin);
+  assert.strictEqual(res.updated, 1);
+  assert.strictEqual(res.skipped.length, 1);
+  assert.strictEqual(db.getRecordByArchiveId('PID-1').data.titel, 'Neu');
+  assert.strictEqual(db.getRecordByArchiveId('PID-2').data.titel, 'Alt2', 'PID-2 left untouched');
+});
+
+test('findExistingArchiveIds reports collisions case-insensitively', () => {
+  const set = db.findExistingArchiveIds(['imp-001', 'IMP-100', 'NICHT-DA']);
+  assert.ok(set.has('imp-001'));
+  assert.ok(set.has('imp-100'));
+  assert.ok(!set.has('nicht-da'));
+});
+
 console.log('\n— Parallelzugriff (zweite Verbindung) —');
 
 test('write from a second connection is detected as conflict', () => {

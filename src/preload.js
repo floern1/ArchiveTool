@@ -10,6 +10,7 @@ const CHANNELS = new Set([
   'types:list', 'types:create', 'types:update', 'types:delete',
   'records:list', 'records:get', 'records:create', 'records:update',
   'records:delete', 'records:history',
+  'import:pickFile', 'import:preview', 'import:buildResolution', 'import:commit', 'import:cancel',
   'stats:get',
   'file:pick', 'file:openPath', 'file:showInFolder',
 ]);

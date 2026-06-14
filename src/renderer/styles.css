@@ -519,3 +519,96 @@ table.data tbody tr.clickable:hover { background: var(--surface-2); }
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/* ================= Import wizard ================= */
+
+.import-section { padding: 18px 20px; margin-bottom: 16px; }
+.import-section h3 { font-size: 15px; margin-bottom: 12px; }
+.import-intro { padding: 8px; }
+
+.import-stepper { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+.import-step {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--border);
+  color: var(--text-soft); font-size: 13px; font-weight: 600;
+}
+.import-step.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.import-step.done { color: var(--success); border-color: var(--success-soft); }
+.import-step-no {
+  width: 22px; height: 22px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--surface-2); font-size: 12px;
+}
+.import-step.active .import-step-no { background: var(--accent); color: #fff; }
+.import-step.done .import-step-no { background: var(--success); color: #fff; }
+
+.import-radio-row { display: flex; flex-direction: column; gap: 8px; }
+.import-radio { display: flex; align-items: center; gap: 4px; font-size: 14px; cursor: pointer; }
+.import-target-detail { margin-top: 12px; }
+.import-target-detail > label { display: block; font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+
+.import-fields-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+
+.import-table th, .import-table td { vertical-align: top; }
+.import-table .import-row-off { opacity: .5; }
+.import-col-head { font-weight: 600; }
+.import-col-sample {
+  font-size: 12px; color: var(--text-faint);
+  max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.import-fill { white-space: nowrap; }
+.import-fill-bar {
+  display: inline-block; width: 80px; height: 8px;
+  background: var(--surface-2); border-radius: 4px; overflow: hidden;
+  vertical-align: middle; margin-right: 8px;
+}
+.import-fill-val { height: 100%; border-radius: 4px; min-width: 2px; }
+.import-fill-val.green { background: var(--success); }
+.import-fill-val.amber { background: var(--warn); }
+.import-fill-val.red { background: var(--danger); }
+.import-fill-pct { font-size: 12px; color: var(--text-soft); }
+
+.import-newfield { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.import-newfield input[type="text"] { min-width: 130px; flex: 1; }
+.import-newfield select { width: auto; min-width: 120px; }
+.import-extra .checkbox-row { white-space: nowrap; }
+
+.import-actions { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+
+.import-dedupe-cols { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+.import-dedupe-col { font-size: 13px; }
+
+.import-stats { display: flex; flex-wrap: wrap; gap: 24px; }
+.import-stat { display: flex; flex-direction: column; align-items: center; gap: 2px; color: var(--text-soft); font-size: 13px; }
+.import-stat-num { font-size: 26px; font-weight: 700; color: var(--text); letter-spacing: -.02em; }
+.import-stat-num.green { color: var(--success); }
+.import-stat-num.amber { color: var(--warn); }
+.import-stat-num.red { color: var(--danger); }
+
+.import-detail-block { margin-top: 14px; font-size: 13px; }
+.import-detail-block ul { margin: 6px 0 0; padding-left: 20px; }
+.import-detail-block li { margin-bottom: 2px; }
+.import-detail-block summary { cursor: pointer; }
+.import-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+
+.import-running {
+  position: fixed; inset: 0; z-index: 90;
+  background: rgba(248, 250, 252, .8);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 14px; color: var(--text-soft);
+}
+.spinner {
+  width: 38px; height: 38px; border-radius: 50%;
+  border: 4px solid var(--border); border-top-color: var(--accent);
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.btn.danger-soft { color: var(--danger); }
+
+.import-merge-card { padding: 14px 16px; margin-bottom: 12px; }
+.import-merge-head { display: flex; align-items: center; gap: 10px; }
+.import-merge-head select { width: auto; min-width: 200px; }
+.import-merge-card table.data td { vertical-align: middle; }
+.import-merge-card table.data select { width: 100%; }

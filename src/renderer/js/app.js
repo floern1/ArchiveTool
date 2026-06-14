@@ -112,6 +112,9 @@ window.AT = window.AT || {};
     if (AT.views[view]) await AT.views[view](content);
   }
 
+  // Allow views to navigate programmatically (e.g. import → archive).
+  AT.go = navigate;
+
   function renderMain() {
     const user = AT.state.currentUser;
     $('#user-name').textContent = user.display_name;
@@ -121,7 +124,7 @@ window.AT = window.AT || {};
     $('#sidebar-db').title = AT.state.dbPath || '';
     AT.$$('.admin-only').forEach((el) => el.classList.toggle('hidden', user.role !== 'admin'));
     showScreen('main');
-    navigate(currentView === 'users' && user.role !== 'admin' ? 'dashboard' : currentView);
+    navigate(['users', 'import'].includes(currentView) && user.role !== 'admin' ? 'dashboard' : currentView);
   }
 
   /* ---------------- state handling ---------------- */

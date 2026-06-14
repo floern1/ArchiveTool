@@ -620,6 +620,133 @@ function listRecords({ docTypeId, search, fieldFilters, sort, dir, limit, offset
   return { total, limit: lim, offset: off, records: rows.map(rowToRecord) };
 }
 
+/* ------------------------------------------------------------------ */
+/* Bulk import                                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Return the subset of the given archive ids that already exist in the
+ * database (compared case-insensitively). Used by the import preview to report
+ * collisions before anything is written.
+ */
+function findExistingArchiveIds(ids) {
+  const d = requireDb();
+  const existing = new Set();
+  const unique = [...new Set(ids.map((id) => String(id)))].filter((id) => id !== '');
+  const CHUNK = 400;
+  for (let i = 0; i < unique.length; i += CHUNK) {
+    const slice = unique.slice(i, i + CHUNK);
+    const rows = d.prepare(
+      `SELECT archive_id FROM records WHERE archive_id IN (${slice.map(() => '?').join(',')})`
+    ).all(...slice);
+    for (const r of rows) existing.add(r.archive_id.toLowerCase());
+  }
+  return existing;
+}
+
+/**
+ * Insert (or, on duplicate, update) many records in a single transaction.
+ *
+ *  - rows: [{ archiveId, data, sourceRowNumber }]
+ *  - onDuplicate: how to treat an archive id that already exists in the db:
+ *      'skip'      – leave the existing record untouched (default)
+ *      'overwrite' – merge the imported field values into the existing record
+ *
+ * Bad rows (validation errors, duplicate ids inside the same file) are skipped
+ * and reported instead of aborting the whole import. Every created or updated
+ * record is written to the change history just like a normal edit.
+ */
+function getRecordByArchiveId(archiveId) {
+  const d = requireDb();
+  const row = d.prepare('SELECT * FROM records WHERE archive_id = ?').get(String(archiveId));
+  return row ? rowToRecord(row) : null;
+}
+
+/** Map of archive_id (lower-cased) → parsed record data, for many ids at once. */
+function getRecordsDataByArchiveIds(ids) {
+  const d = requireDb();
+  const map = new Map();
+  const unique = [...new Set(ids.map((id) => String(id)))].filter((id) => id !== '');
+  const CHUNK = 400;
+  for (let i = 0; i < unique.length; i += CHUNK) {
+    const slice = unique.slice(i, i + CHUNK);
+    const rows = d.prepare(
+      `SELECT archive_id, data FROM records WHERE archive_id IN (${slice.map(() => '?').join(',')})`
+    ).all(...slice);
+    for (const r of rows) map.set(r.archive_id.toLowerCase(), JSON.parse(r.data));
+  }
+  return map;
+}
+
+function importRecords({ docTypeId, rows, onDuplicate = 'skip', perId = null }, actor) {
+  const d = requireDb();
+  const type = getDocType(docTypeId);
+  const actorId = actor ? actor.id : null;
+
+  const insStmt = d.prepare(
+    'INSERT INTO records (archive_id, doc_type_id, data, created_by, updated_by) VALUES (?, ?, ?, ?, ?)'
+  );
+  const getStmt = d.prepare('SELECT * FROM records WHERE id = ?');
+  const findStmt = d.prepare('SELECT * FROM records WHERE archive_id = ?');
+  const updStmt = d.prepare(
+    'UPDATE records SET data = ?, version = version + 1, updated_by = ?, ' +
+    "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ? AND version = ?"
+  );
+
+  const result = { total: rows.length, created: 0, updated: 0, skipped: [], failed: [] };
+  const seen = new Set(); // archive ids handled within this batch (lowercased)
+
+  const tx = d.transaction(() => {
+    for (const r of rows) {
+      try {
+        const id = validateArchiveId(r.archiveId);
+        const lower = id.toLowerCase();
+        if (seen.has(lower)) {
+          result.skipped.push({ archiveId: id, row: r.sourceRowNumber, reason: 'Doppelte Archiv-ID innerhalb der Importdatei' });
+          continue;
+        }
+        const existing = findStmt.get(id);
+        if (existing) {
+          // A per-id decision (from manual conflict resolution) overrides the
+          // global strategy for this specific archive id.
+          const mode = (perId && perId[lower]) ? perId[lower] : onDuplicate;
+          if (mode === 'overwrite') {
+            // Validate the imported values merged onto the existing record, so
+            // required fields already present in the record are kept. The
+            // validated result only contains keys known to the type, so we then
+            // re-attach any other values the record already had (e.g. fields
+            // that were later removed from the type) — exactly as updateDocType
+            // preserves them, instead of silently dropping them on overwrite.
+            const prior = JSON.parse(existing.data);
+            const validated = validateRecordData(type.fields, { ...prior, ...(r.data || {}) });
+            const known = new Set(type.fields.map((f) => f.name));
+            const merged = { ...validated };
+            for (const [k, v] of Object.entries(prior)) {
+              if (!known.has(k)) merged[k] = v;
+            }
+            updStmt.run(JSON.stringify(merged), actorId, existing.id, existing.version);
+            writeHistory(d, getStmt.get(existing.id), 'update', actor);
+            seen.add(lower);
+            result.updated++;
+          } else {
+            result.skipped.push({ archiveId: id, row: r.sourceRowNumber, reason: 'Archiv-ID existiert bereits in der Datenbank' });
+          }
+          continue;
+        }
+        const clean = validateRecordData(type.fields, r.data || {});
+        const info = insStmt.run(id, docTypeId, JSON.stringify(clean), actorId, actorId);
+        writeHistory(d, getStmt.get(info.lastInsertRowid), 'create', actor);
+        seen.add(lower);
+        result.created++;
+      } catch (e) {
+        result.failed.push({ archiveId: r.archiveId, row: r.sourceRowNumber, reason: e.message });
+      }
+    }
+  });
+  tx();
+  return result;
+}
+
 function getRecordHistory(recordId) {
   const d = requireDb();
   return d.prepare(`
@@ -696,6 +823,10 @@ module.exports = {
   updateRecord,
   deleteRecord,
   getRecordHistory,
+  getRecordByArchiveId,
+  getRecordsDataByArchiveIds,
+  findExistingArchiveIds,
+  importRecords,
   // dashboard
   getStats,
 };
