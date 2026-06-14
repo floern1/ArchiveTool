@@ -31,6 +31,7 @@ window.AT = window.AT || {};
       archiveId: { mode: 'generate', index: null, prefix: 'IMP-' },
       dedupeColumns: [],
       onDuplicate: 'skip',
+      withinFileDuplicates: 'all',
       step: 1,
     };
   }
@@ -344,6 +345,8 @@ window.AT = window.AT || {};
       archiveId: state.archiveId.mode === 'column'
         ? { mode: 'column', index: state.archiveId.index, prefix: state.archiveId.prefix }
         : { mode: 'generate', prefix: state.archiveId.prefix },
+      dedupeColumns: state.dedupeColumns,
+      withinFileDuplicates: state.withinFileDuplicates,
     };
   }
 
@@ -407,6 +410,16 @@ window.AT = window.AT || {};
         h('div', { class: 'import-chips' }, p.collisionExamples.slice(0, 12).map((id) => h('span', { class: 'badge' }, id)))));
     }
 
+    // Resolution for redundant rows *within the file* (by the key columns).
+    const hasWithinFile = p.withinFile.duplicateRows > 0;
+    const withinHandling = h('div', { class: 'import-section', style: 'border:none; padding:14px 0 0' },
+      h('label', { style: 'font-weight:600; display:block; margin-bottom:6px' }, 'Umgang mit Dubletten innerhalb der Datei:'),
+      h('div', { class: 'import-radio-row' },
+        radio('imp-within', 'all', state.withinFileDuplicates === 'all', 'Alle importieren (nichts entfernen)', () => { state.withinFileDuplicates = 'all'; }),
+        radio('imp-within', 'first', state.withinFileDuplicates === 'first', 'Nur den ersten Treffer je Schlüssel importieren', () => { state.withinFileDuplicates = 'first'; }),
+        radio('imp-within', 'mostComplete', state.withinFileDuplicates === 'mostComplete', 'Den am besten befüllten Eintrag je Schlüssel behalten', () => { state.withinFileDuplicates = 'mostComplete'; })));
+
+    // Resolution for archive ids that already exist in the database.
     const hasCollisions = p.existingCollisions > 0;
     const dupHandling = h('div', { class: 'import-section', style: 'border:none; padding:14px 0 0' },
       h('label', { style: 'font-weight:600; display:block; margin-bottom:6px' }, 'Umgang mit bereits vorhandenen Archiv-IDs:'),
@@ -417,6 +430,7 @@ window.AT = window.AT || {};
     box.replaceChildren(
       h('div', { class: 'import-stats' }, items),
       detail.length ? h('div', {}, detail) : null,
+      hasWithinFile ? withinHandling : null,
       hasCollisions ? dupHandling : null);
   }
 

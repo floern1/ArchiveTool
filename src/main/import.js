@@ -531,6 +531,44 @@ function findDuplicates(dataRows, keyIndices) {
   return { duplicateGroups, duplicateRows, examples };
 }
 
+/**
+ * Resolve redundant rows: for every group of rows that share the same value
+ * across the chosen key columns, decide which rows to drop.
+ *
+ *  - keyIndices: original column indices that define a duplicate.
+ *  - weights: optional array (indexed like dataRows). When given, the row with
+ *    the highest weight in a group is kept (ties → first); otherwise the first
+ *    occurrence is kept. Use e.g. the number of populated fields as weight to
+ *    keep the most complete record.
+ *
+ * Returns a Set of zero-based row indices that should be skipped.
+ */
+function withinFileDropIndices(dataRows, keyIndices, weights) {
+  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
+  const SEP = '␟';
+  const groups = new Map();
+  for (let i = 0; i < dataRows.length; i++) {
+    const key = keyIndices.map((ci) => norm(dataRows[i][ci])).join(SEP);
+    if (key.split(SEP).join('') === '') continue; // all key columns empty
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(i);
+  }
+  const drop = new Set();
+  for (const idxs of groups.values()) {
+    if (idxs.length < 2) continue;
+    let keep = idxs[0];
+    if (weights) {
+      for (const i of idxs) {
+        if ((weights[i] || 0) > (weights[keep] || 0)) keep = i;
+      }
+    }
+    for (const i of idxs) {
+      if (i !== keep) drop.add(i);
+    }
+  }
+  return drop;
+}
+
 module.exports = {
   // file reading
   readWorkbook,
@@ -551,4 +589,5 @@ module.exports = {
   sanitizeArchiveId,
   buildImportRows,
   findDuplicates,
+  withinFileDropIndices,
 };

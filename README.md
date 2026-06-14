@@ -44,10 +44,15 @@ damit arbeiten.
      bestehendes, anders benanntes Feld** abgebildet. Die Archiv-ID lässt sich
      aus einer Spalte übernehmen (z. B. eine Laufnummer) oder automatisch
      erzeugen.
-  3. **Redundanzprüfung** – über frei wählbare Schlüsselspalten erkennt der
-     Assistent doppelte Zeilen *innerhalb der Datei* sowie Archiv-IDs, die
-     *bereits in der Datenbank* vorhanden sind. Dubletten lassen sich
-     überspringen oder in vorhandene Einträge einpflegen.
+  3. **Redundanzprüfung mit Auflösung** – über frei wählbare Schlüsselspalten
+     erkennt der Assistent doppelte Zeilen *innerhalb der Datei* sowie
+     Archiv-IDs, die *bereits in der Datenbank* vorhanden sind, und lässt sie
+     auflösen:
+     - Dubletten *innerhalb der Datei*: alle importieren, nur den ersten
+       Treffer je Schlüssel behalten oder den am besten befüllten Eintrag je
+       Schlüssel behalten.
+     - Kollisionen mit der *Datenbank*: überspringen oder in den vorhandenen
+       Eintrag einpflegen (aktualisieren).
 
   Der Import erfolgt ohne externe Bibliotheken: `.xlsx`-Dateien (ein ZIP aus
   XML-Teilen) werden mit Bordmitteln gelesen.

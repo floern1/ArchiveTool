@@ -495,6 +495,29 @@ test('bulk import overwrite preserves data of fields removed from the type', () 
   assert.strictEqual(full.data.altfeld, 'bewahren', 'value of removed field preserved');
 });
 
+test('withinFileDropIndices resolves redundant rows (first / most complete)', () => {
+  const data = [['Meier', '1952'], ['Meier', '1952'], ['Schulz', '1960'], ['Meier', '1952']];
+  // keep first of each key group → drop the later Meier/1952 rows (1 and 3)
+  const first = importer.withinFileDropIndices(data, [0, 1]);
+  assert.deepStrictEqual([...first].sort((a, b) => a - b), [1, 3]);
+  // weighted: keep the most complete row (index 1) → drop 0 and 3
+  const mostComplete = importer.withinFileDropIndices(data, [0, 1], [1, 3, 1, 2]);
+  assert.deepStrictEqual([...mostComplete].sort((a, b) => a - b), [0, 3]);
+  // rows whose key columns are all empty are never treated as duplicates
+  assert.strictEqual(importer.withinFileDropIndices([['', ''], ['', '']], [0, 1]).size, 0);
+});
+
+test('within-file dedup keeps one record per key before import', () => {
+  const t = db.createDocType({ name: 'Dedup', icon: '📥', fields: [{ label: 'Titel', field_type: 'text', required: true }] }, admin);
+  const data = [['Werk A'], ['Werk A'], ['Werk B']]; // rows 0 and 1 are redundant by column 0
+  const eff = [{ index: 0, name: 'titel', fieldType: 'text' }];
+  const built = importer.buildImportRows(data, eff, { mode: 'generate', prefix: 'DD-' }); // distinct generated ids
+  const drop = importer.withinFileDropIndices(data, [0]);
+  const keep = built.filter((_, i) => !drop.has(i));
+  const res = db.importRecords({ docTypeId: t.id, rows: keep, onDuplicate: 'skip' }, admin);
+  assert.strictEqual(res.created, 2, 'one „Werk A“ plus „Werk B“');
+});
+
 test('findExistingArchiveIds reports collisions case-insensitively', () => {
   const set = db.findExistingArchiveIds(['imp-001', 'IMP-100', 'NICHT-DA']);
   assert.ok(set.has('imp-001'));

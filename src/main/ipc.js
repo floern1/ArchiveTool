@@ -269,6 +269,15 @@ function registerIpcHandlers(getWindow) {
     return null; // new type – created on commit
   }
 
+  // Key columns that define a redundant row. Defaults to the archive-id source
+  // column when the user did not pick explicit columns.
+  function dedupeKeyIndices(archiveId, dedupeColumns) {
+    const base = Array.isArray(dedupeColumns) && dedupeColumns.length
+      ? dedupeColumns
+      : (archiveId && archiveId.mode === 'column' ? [archiveId.index] : []);
+    return base.filter((i) => Number.isInteger(i) && i >= 0);
+  }
+
   handle('import:preview', ({ token, target, mapping, archiveId, dedupeColumns }) => {
     requireAdmin();
     const s = getImportSession(token);
@@ -278,10 +287,7 @@ function registerIpcHandlers(getWindow) {
 
     // Redundancy within the file, on the chosen key columns (default: the
     // archive-id source column, if any).
-    let keyIndices = Array.isArray(dedupeColumns) && dedupeColumns.length
-      ? dedupeColumns
-      : (archiveId && archiveId.mode === 'column' ? [archiveId.index] : []);
-    keyIndices = keyIndices.filter((i) => Number.isInteger(i) && i >= 0);
+    const keyIndices = dedupeKeyIndices(archiveId, dedupeColumns);
     const withinFile = keyIndices.length
       ? importer.findDuplicates(s.dataRows, keyIndices)
       : { duplicateGroups: 0, duplicateRows: 0, examples: [] };
@@ -312,7 +318,7 @@ function registerIpcHandlers(getWindow) {
     };
   });
 
-  handle('import:commit', ({ token, target, mapping, archiveId, onDuplicate }) => {
+  handle('import:commit', ({ token, target, mapping, archiveId, onDuplicate, dedupeColumns, withinFileDuplicates }) => {
     const actor = requireAdmin();
     const s = getImportSession(token);
 
@@ -348,11 +354,37 @@ function registerIpcHandlers(getWindow) {
     }
 
     const built = importer.buildImportRows(s.dataRows, effective, archiveId || { mode: 'generate', prefix: 'IMP-' });
+
+    // Resolve redundant rows within the file (by the chosen key columns) before
+    // inserting: keep the first / most complete row per group, skip the rest.
+    let toImport = built;
+    const droppedDupes = [];
+    const keyIndices = dedupeKeyIndices(archiveId, dedupeColumns);
+    if ((withinFileDuplicates === 'first' || withinFileDuplicates === 'mostComplete') && keyIndices.length) {
+      const weights = withinFileDuplicates === 'mostComplete'
+        ? built.map((r) => Object.keys(r.data).length)
+        : null;
+      const dropIdx = importer.withinFileDropIndices(s.dataRows, keyIndices, weights);
+      toImport = [];
+      built.forEach((r, i) => {
+        if (dropIdx.has(i)) {
+          droppedDupes.push({ archiveId: r.archiveId, row: r.sourceRowNumber, reason: 'Redundant – Dublette innerhalb der Datei (nach Schlüsselspalten)' });
+        } else {
+          toImport.push(r);
+        }
+      });
+    }
+
     const summary = db.importRecords({
       docTypeId,
-      rows: built,
+      rows: toImport,
       onDuplicate: onDuplicate === 'overwrite' ? 'overwrite' : 'skip',
     }, actor);
+
+    // Fold the dropped redundant rows into the reported result.
+    summary.total += droppedDupes.length;
+    summary.skipped = droppedDupes.concat(summary.skipped);
+    summary.deduplicated = droppedDupes.length;
 
     importSessions.delete(token);
     return { ...summary, docTypeId };
