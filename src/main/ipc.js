@@ -333,38 +333,62 @@ function registerIpcHandlers(getWindow) {
     const built = importer.buildImportRows(s.dataRows, effective, archiveId || { mode: 'generate', prefix: 'IMP-' });
     const fields = effective.map((c) => ({ name: c.name, label: c.label || c.name, field_type: c.fieldType }));
 
+    const fieldNames = fields.map((f) => f.name);
     const keyIndices = dedupeKeyIndices(archiveId, dedupeColumns);
     const groups = keyIndices.length ? importer.groupDuplicateRows(s.dataRows, keyIndices) : [];
-    const within = groups.slice(0, RESOLUTION_CAP).map((g) => {
-      const members = g.members.map((i) => ({ rowNumber: i + 2, archiveId: built[i].archiveId, data: built[i].data }));
-      return { key: g.key, display: g.display, members, suggestedMaster: importer.mostCompleteIndex(members.map((m) => m.data)) };
-    });
 
+    // Only groups whose members actually differ in some mapped field need a
+    // decision; groups that are identical (true duplicates) are merged
+    // automatically and merely counted, so the review stays focused.
+    const withinNeeding = [];
+    let withinIdentical = 0;
+    for (const g of groups) {
+      const members = g.members.map((i) => ({ rowNumber: i + 2, archiveId: built[i].archiveId, data: built[i].data }));
+      if (importer.differingFieldNames(fieldNames, members.map((m) => m.data)).length === 0) {
+        withinIdentical++;
+        continue;
+      }
+      withinNeeding.push({ key: g.key, display: g.display, members, suggestedMaster: importer.mostCompleteIndex(members.map((m) => m.data)) });
+    }
+    const within = withinNeeding.slice(0, RESOLUTION_CAP);
+
+    // Collisions with the database: load the existing records in bulk and only
+    // surface those that actually differ from the imported values.
     const existingIds = db.findExistingArchiveIds(built.map((r) => r.archiveId));
-    const seen = new Set();
-    const collisions = [];
-    let collisionsTotal = 0;
+    const collidingIds = [];
+    const seenC = new Set();
     for (const r of built) {
       if (!r.archiveId) continue;
       const low = r.archiveId.toLowerCase();
-      if (existingIds.has(low) && !seen.has(low)) {
-        collisionsTotal++;
-        if (collisions.length < RESOLUTION_CAP) {
-          const ex = db.getRecordByArchiveId(r.archiveId);
-          collisions.push({ archiveId: r.archiveId, rowNumber: r.sourceRowNumber, incoming: r.data, existing: ex ? ex.data : {} });
-        }
-      }
-      seen.add(low);
+      if (existingIds.has(low) && !seenC.has(low)) collidingIds.push(r.archiveId);
+      seenC.add(low);
     }
+    const existingData = db.getRecordsDataByArchiveIds(collidingIds);
+    const collNeeding = [];
+    let collisionsIdentical = 0;
+    const seen2 = new Set();
+    for (const r of built) {
+      if (!r.archiveId) continue;
+      const low = r.archiveId.toLowerCase();
+      if (existingIds.has(low) && !seen2.has(low)) {
+        const exData = existingData.get(low) || {};
+        if (importer.differingFieldNames(fieldNames, [exData, r.data]).length === 0) collisionsIdentical++;
+        else collNeeding.push({ archiveId: r.archiveId, rowNumber: r.sourceRowNumber, incoming: r.data, existing: exData });
+      }
+      seen2.add(low);
+    }
+    const collisions = collNeeding.slice(0, RESOLUTION_CAP);
 
     return {
       fields,
       within,
       withinTotal: groups.length,
+      withinIdentical,
+      truncated: withinNeeding.length > RESOLUTION_CAP,
       collisions,
-      collisionsTotal,
-      truncated: groups.length > RESOLUTION_CAP,
-      truncatedCollisions: collisionsTotal > RESOLUTION_CAP,
+      collisionsTotal: collNeeding.length + collisionsIdentical,
+      collisionsIdentical,
+      truncatedCollisions: collNeeding.length > RESOLUTION_CAP,
     };
   });
 

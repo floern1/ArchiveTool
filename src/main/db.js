@@ -662,6 +662,22 @@ function getRecordByArchiveId(archiveId) {
   return row ? rowToRecord(row) : null;
 }
 
+/** Map of archive_id (lower-cased) → parsed record data, for many ids at once. */
+function getRecordsDataByArchiveIds(ids) {
+  const d = requireDb();
+  const map = new Map();
+  const unique = [...new Set(ids.map((id) => String(id)))].filter((id) => id !== '');
+  const CHUNK = 400;
+  for (let i = 0; i < unique.length; i += CHUNK) {
+    const slice = unique.slice(i, i + CHUNK);
+    const rows = d.prepare(
+      `SELECT archive_id, data FROM records WHERE archive_id IN (${slice.map(() => '?').join(',')})`
+    ).all(...slice);
+    for (const r of rows) map.set(r.archive_id.toLowerCase(), JSON.parse(r.data));
+  }
+  return map;
+}
+
 function importRecords({ docTypeId, rows, onDuplicate = 'skip', perId = null }, actor) {
   const d = requireDb();
   const type = getDocType(docTypeId);
@@ -808,6 +824,7 @@ module.exports = {
   deleteRecord,
   getRecordHistory,
   getRecordByArchiveId,
+  getRecordsDataByArchiveIds,
   findExistingArchiveIds,
   importRecords,
   // dashboard

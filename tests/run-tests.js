@@ -534,6 +534,13 @@ test('groupDuplicateRows / mostCompleteIndex / mergeData', () => {
   assert.deepStrictEqual(importer.mergeData([{ titel: 'A', autor: 'X' }, { titel: 'B' }], 0, { titel: 1 }), { titel: 'B', autor: 'X' });
 });
 
+test('differingFieldNames flags only fields that actually differ', () => {
+  const names = ['a', 'b', 'c'];
+  assert.deepStrictEqual(importer.differingFieldNames(names, [{ a: 1, b: 'x' }, { a: 1, b: 'y' }]), ['b']);
+  assert.deepStrictEqual(importer.differingFieldNames(names, [{ a: 1 }, { a: 1 }]), [], 'identical → none');
+  assert.deepStrictEqual(importer.differingFieldNames(['c'], [{}, { c: 'v' }]), ['c'], 'empty vs filled differs');
+});
+
 test('manual within-file merge produces one record per group', () => {
   const t = db.createDocType({ name: 'MergeTyp', icon: '📥', fields: [
     { label: 'Titel', field_type: 'text', required: true }, { label: 'Autor', field_type: 'text' }, { label: 'Jahr', field_type: 'number' },

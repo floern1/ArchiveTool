@@ -628,6 +628,12 @@ function mergeData(records, masterIndex, overrides) {
   return out;
 }
 
+/** Names of fields whose value differs across the given record data objects. */
+function differingFieldNames(fieldNames, records) {
+  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
+  return fieldNames.filter((name) => new Set(records.map((r) => norm(r && r[name]))).size > 1);
+}
+
 module.exports = {
   // file reading
   readWorkbook,
@@ -652,4 +658,5 @@ module.exports = {
   groupDuplicateRows,
   mostCompleteIndex,
   mergeData,
+  differingFieldNames,
 };

@@ -464,7 +464,12 @@ window.AT = window.AT || {};
       const hasWithin = state.withinFileDuplicates === 'manual' && res.within.length > 0;
       const hasColl = state.onDuplicate === 'manual' && res.collisions.length > 0;
       if (!hasWithin && !hasColl) {
-        // Nothing to resolve manually → import directly.
+        // Nothing actually needs a manual decision (e.g. all duplicates are
+        // identical) → tell the user and import directly.
+        const ident = (res.withinIdentical || 0) + (res.collisionsIdentical || 0);
+        toast(ident
+          ? `Keine abweichenden Dubletten – ${ident.toLocaleString('de-DE')} identische Einträge werden automatisch behandelt.`
+          : 'Keine Dubletten zu entscheiden – der Import wird direkt ausgeführt.');
         return doCommit();
       }
       state.resolution = res;
@@ -658,13 +663,16 @@ window.AT = window.AT || {};
     const sections = [];
     if (state.withinFileDuplicates === 'manual' && res.within.length) {
       sections.push(pager(res.within, 'within',
-        `Dubletten in der Datei (${res.withinTotal}${res.truncated ? ', gekürzt' : ''})`, renderWithinGroup));
+        `Abweichende Dubletten in der Datei (${res.within.length} zu prüfen)`, renderWithinGroup));
     }
     if (state.onDuplicate === 'manual' && res.collisions.length) {
-      const total = res.collisionsTotal != null ? res.collisionsTotal : res.collisions.length;
       sections.push(pager(res.collisions, 'collisions',
-        `Kollisionen mit der Datenbank (${total})`, renderCollision));
+        `Abweichende Kollisionen mit der Datenbank (${res.collisions.length} zu prüfen)`, renderCollision));
     }
+
+    const identNotes = [];
+    if (res.withinIdentical) identNotes.push(`${res.withinIdentical.toLocaleString('de-DE')} identische Dubletten-Gruppen werden automatisch zusammengeführt.`);
+    if (res.collisionsIdentical) identNotes.push(`${res.collisionsIdentical.toLocaleString('de-DE')} Kollisionen sind mit dem Bestand identisch – keine Änderung nötig.`);
 
     container.replaceChildren(
       header(),
@@ -677,7 +685,8 @@ window.AT = window.AT || {};
         res.truncated ? h('p', { class: 'meta-line' },
           `Hinweis: Es werden die ersten ${res.within.length} Gruppen zur Bearbeitung angezeigt; weitere werden automatisch (am besten befüllt) zusammengeführt.`) : null,
         res.truncatedCollisions ? h('p', { class: 'meta-line' },
-          `Hinweis: Es werden die ersten ${res.collisions.length} von ${res.collisionsTotal} Datenbank-Kollisionen angezeigt; weitere werden automatisch übersprungen.`) : null),
+          `Hinweis: Es werden die ersten ${res.collisions.length} von ${res.collisionsTotal} Datenbank-Kollisionen angezeigt; weitere werden automatisch übersprungen.`) : null,
+        identNotes.map((t) => h('p', { class: 'meta-line', style: 'margin-top:6px' }, '✓ ' + t))),
       h('div', {}, sections),
       h('div', { class: 'import-actions' },
         h('button', { class: 'btn', onclick: () => { state.step = 3; render(); } }, '← Zurück'),
