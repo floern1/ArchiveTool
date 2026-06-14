@@ -1,12 +1,15 @@
 name: Release
 
-# Builds installers for all platforms and attaches them to a GitHub Release
-# whenever a version tag (e.g. v1.0.0) is pushed.
+# Builds installers for all platforms and attaches them to a GitHub Release.
+# Triggered either by pushing a version tag (e.g. v1.0.0) or manually from the
+# Actions tab. electron-builder creates the tag/release for the package version
+# automatically when run without a tag.
 
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: write
