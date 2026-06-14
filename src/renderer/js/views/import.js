@@ -475,6 +475,7 @@ window.AT = window.AT || {};
       state.resolution = res;
       initDecisions(res);
       state.reviewPage = { within: 0, collisions: 0 };
+      if (!state.reviewPageSize) state.reviewPageSize = 20;
       state.step = 'review';
       render();
       return;
@@ -644,14 +645,27 @@ window.AT = window.AT || {};
   }
 
   function pager(list, pageKey, sectionTitle, renderCard) {
-    const PER = 20;
-    const page = state.reviewPage[pageKey] || 0;
+    const size = state.reviewPageSize || 20;
+    const PER = size === 'all' ? Math.max(list.length, 1) : size;
     const pages = Math.max(1, Math.ceil(list.length / PER));
+    const page = Math.min(state.reviewPage[pageKey] || 0, pages - 1);
     const slice = list.slice(page * PER, page * PER + PER);
+    const sizeSelect = h('select', {
+      style: 'width:auto; min-width:110px',
+      title: 'Einträge pro Seite',
+      onchange: (e) => {
+        state.reviewPageSize = e.target.value === 'all' ? 'all' : Number(e.target.value);
+        state.reviewPage = { within: 0, collisions: 0 };
+        render();
+      },
+    },
+      [20, 50, 100, 200, 500].map((n) => h('option', { value: n, selected: size === n }, `${n} pro Seite`)),
+      h('option', { value: 'all', selected: size === 'all' }, `Alle (${list.length.toLocaleString('de-DE')})`));
     return h('div', { class: 'import-section', style: 'padding:0' },
       h('div', { class: 'import-fields-head', style: 'margin:6px 0 10px' },
         h('h3', {}, sectionTitle),
         h('div', { class: 'spacer' }),
+        sizeSelect,
         pages > 1 ? h('span', { class: 'meta-line' }, `Seite ${page + 1}/${pages}`) : null,
         pages > 1 ? h('button', { class: 'btn small', disabled: page === 0, onclick: () => { state.reviewPage[pageKey] = page - 1; render(); } }, '← Zurück') : null,
         pages > 1 ? h('button', { class: 'btn small', disabled: page >= pages - 1, onclick: () => { state.reviewPage[pageKey] = page + 1; render(); } }, 'Weiter →') : null),
