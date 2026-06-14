@@ -318,13 +318,11 @@ function registerIpcHandlers(getWindow) {
     };
   });
 
-  // For the manual resolution screen: return the actual duplicate groups (with
-  // their member rows) and the database collisions (with the existing record),
-  // each with an auto-suggested resolution the user can override. Capped so the
-  // payload stays reasonable; groups beyond the cap fall back to the automatic
-  // default at commit time.
-  const RESOLUTION_CAP = 400;
-
+  // For the manual resolution screen: return every duplicate group (with its
+  // member rows) and every database collision (with the existing record) that
+  // actually differs in a mapped field, each with an auto-suggested resolution
+  // the user can override. Identical entries are filtered out and merely
+  // counted, so the list contains only items that need a decision.
   handle('import:buildResolution', ({ token, target, mapping, archiveId, dedupeColumns }) => {
     requireAdmin();
     const s = getImportSession(token);
@@ -350,7 +348,7 @@ function registerIpcHandlers(getWindow) {
       }
       withinNeeding.push({ key: g.key, display: g.display, members, suggestedMaster: importer.mostCompleteIndex(members.map((m) => m.data)) });
     }
-    const within = withinNeeding.slice(0, RESOLUTION_CAP);
+    const within = withinNeeding;
 
     // Collisions with the database: load the existing records in bulk and only
     // surface those that actually differ from the imported values.
@@ -377,18 +375,16 @@ function registerIpcHandlers(getWindow) {
       }
       seen2.add(low);
     }
-    const collisions = collNeeding.slice(0, RESOLUTION_CAP);
+    const collisions = collNeeding;
 
     return {
       fields,
       within,
       withinTotal: groups.length,
       withinIdentical,
-      truncated: withinNeeding.length > RESOLUTION_CAP,
       collisions,
       collisionsTotal: collNeeding.length + collisionsIdentical,
       collisionsIdentical,
-      truncatedCollisions: collNeeding.length > RESOLUTION_CAP,
     };
   });
 
