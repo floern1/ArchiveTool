@@ -2,6 +2,14 @@ appId: de.geschichtsverein.archivverwaltung-bgv-wk
 productName: Archivverwaltung-BGV-WK
 copyright: © Geschichtsverein
 
+# Where signed releases are published (used by `electron-builder --publish`).
+# Publishes the GitHub release automatically once builds finish.
+publish:
+  provider: github
+  owner: floern1
+  repo: ArchiveTool
+  releaseType: release
+
 directories:
   output: dist
   buildResources: build
