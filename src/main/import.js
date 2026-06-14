@@ -569,6 +569,64 @@ function withinFileDropIndices(dataRows, keyIndices, weights) {
   return drop;
 }
 
+/**
+ * Group rows that share the same value across the key columns. Unlike
+ * findDuplicates (which only counts) this returns the actual member row indices
+ * for groups with more than one member, so they can be reviewed and merged.
+ */
+function groupDuplicateRows(dataRows, keyIndices) {
+  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
+  const SEP = '␟';
+  const map = new Map();
+  for (let i = 0; i < dataRows.length; i++) {
+    const key = keyIndices.map((ci) => norm(dataRows[i][ci])).join(SEP);
+    if (key.split(SEP).join('') === '') continue; // all key columns empty
+    if (!map.has(key)) map.set(key, { key, display: key.split(SEP).join(' | '), members: [] });
+    map.get(key).members.push(i);
+  }
+  return [...map.values()].filter((g) => g.members.length > 1);
+}
+
+/** Index of the record with the most populated fields (ties → first). */
+function mostCompleteIndex(records) {
+  let best = 0;
+  let bestN = -1;
+  records.forEach((r, i) => {
+    const n = Object.keys(r || {}).length;
+    if (n > bestN) { bestN = n; best = i; }
+  });
+  return best;
+}
+
+/**
+ * Merge several record data objects into one.
+ *  - records: array of data objects.
+ *  - masterIndex: the primary record; its values win by default.
+ *  - overrides: optional { fieldName: indexIntoRecords } to force a field's
+ *    value to come from a specific record.
+ * For every field, the value is taken from the override record (if non-empty),
+ * else from the master (if non-empty), else from the first record that has it
+ * (so empty master fields are filled from the others).
+ */
+function mergeData(records, masterIndex, overrides) {
+  const out = {};
+  const master = records[masterIndex] || {};
+  const keys = new Set();
+  for (const r of records) for (const k of Object.keys(r || {})) keys.add(k);
+  for (const k of keys) {
+    const ovIdx = overrides && overrides[k] != null ? overrides[k] : null;
+    if (ovIdx != null && records[ovIdx] && records[ovIdx][k] !== undefined && records[ovIdx][k] !== '') {
+      out[k] = records[ovIdx][k];
+      continue;
+    }
+    if (master[k] !== undefined && master[k] !== '') { out[k] = master[k]; continue; }
+    for (const r of records) {
+      if (r && r[k] !== undefined && r[k] !== '') { out[k] = r[k]; break; }
+    }
+  }
+  return out;
+}
+
 module.exports = {
   // file reading
   readWorkbook,
@@ -590,4 +648,7 @@ module.exports = {
   buildImportRows,
   findDuplicates,
   withinFileDropIndices,
+  groupDuplicateRows,
+  mostCompleteIndex,
+  mergeData,
 };

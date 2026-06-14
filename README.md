@@ -49,10 +49,16 @@ damit arbeiten.
      Archiv-IDs, die *bereits in der Datenbank* vorhanden sind, und lässt sie
      auflösen:
      - Dubletten *innerhalb der Datei*: alle importieren, nur den ersten
-       Treffer je Schlüssel behalten oder den am besten befüllten Eintrag je
-       Schlüssel behalten.
-     - Kollisionen mit der *Datenbank*: überspringen oder in den vorhandenen
-       Eintrag einpflegen (aktualisieren).
+       Treffer je Schlüssel behalten, den am besten befüllten Eintrag je
+       Schlüssel behalten – oder **manuell zusammenführen**.
+     - Kollisionen mit der *Datenbank*: überspringen, in den vorhandenen
+       Eintrag einpflegen (aktualisieren) – oder **manuell zusammenführen**.
+     - **Manuelle Zusammenführung**: Jede Dubletten-Gruppe bzw. Kollision ist
+       mit einem sinnvollen Vorschlag vorbelegt (Master = am besten befüllter
+       Eintrag); pro Gruppe lässt sich der Master wählen und für einzelne
+       Felder gezielt festlegen, welcher Wert übernommen wird. Bei sehr vielen
+       Gruppen muss nur angepasst werden, was abweicht – der Rest folgt dem
+       Vorschlag.
 
   Der Import erfolgt ohne externe Bibliotheken: `.xlsx`-Dateien (ein ZIP aus
   XML-Teilen) werden mit Bordmitteln gelesen.

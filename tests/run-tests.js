@@ -518,6 +518,62 @@ test('within-file dedup keeps one record per key before import', () => {
   assert.strictEqual(res.created, 2, 'one „Werk A“ plus „Werk B“');
 });
 
+test('groupDuplicateRows / mostCompleteIndex / mergeData', () => {
+  const data = [['Werk A', 'Meier', ''], ['Werk A', '', '1950'], ['Werk B', 'Schulz', '1960']];
+  const groups = importer.groupDuplicateRows(data, [0]);
+  assert.strictEqual(groups.length, 1, 'only „Werk A“ is a duplicate group');
+  assert.deepStrictEqual(groups[0].members, [0, 1]);
+
+  const recs = [{ titel: 'Werk A', autor: 'Meier' }, { titel: 'Werk A', jahr: 1950 }];
+  assert.strictEqual(importer.mostCompleteIndex(recs), 0);
+  // master 0 wins, empty fields filled from the other → union
+  assert.deepStrictEqual(importer.mergeData(recs, 0), { titel: 'Werk A', autor: 'Meier', jahr: 1950 });
+  // field override: take „jahr“ from record 1 explicitly (already there), title from record 1
+  assert.deepStrictEqual(importer.mergeData([{ titel: 'A', autor: 'X' }, { titel: 'B' }], 0, { titel: 1 }), { titel: 'B', autor: 'X' });
+});
+
+test('manual within-file merge produces one record per group', () => {
+  const t = db.createDocType({ name: 'MergeTyp', icon: '📥', fields: [
+    { label: 'Titel', field_type: 'text', required: true }, { label: 'Autor', field_type: 'text' }, { label: 'Jahr', field_type: 'number' },
+  ] }, admin);
+  // two redundant rows (same title) with complementary fields + a unique row
+  const eff = [{ index: 0, name: 'titel', fieldType: 'text' }, { index: 1, name: 'autor', fieldType: 'text' }, { index: 2, name: 'jahr', fieldType: 'number' }];
+  const data = [['Werk A', 'Meier', ''], ['Werk A', '', '1950'], ['Werk B', 'Schulz', '1961']];
+  const built = importer.buildImportRows(data, eff, { mode: 'generate', prefix: 'MG-' });
+  const groups = importer.groupDuplicateRows(data, [0]);
+  const resolved = [];
+  const consumed = new Set();
+  for (const g of groups) {
+    g.members.forEach((i) => consumed.add(i));
+    const master = importer.mostCompleteIndex(g.members.map((i) => built[i].data));
+    resolved.push({ archiveId: built[g.members[master]].archiveId, data: importer.mergeData(g.members.map((i) => built[i].data), master) });
+  }
+  built.forEach((r, i) => { if (!consumed.has(i)) resolved.push(r); });
+  const res = db.importRecords({ docTypeId: t.id, rows: resolved, onDuplicate: 'skip' }, admin);
+  assert.strictEqual(res.created, 2, 'merged „Werk A“ + „Werk B“');
+  const a = db.getRecordByArchiveId(built[0].archiveId); // the merged master record
+  assert.strictEqual(a.data.titel, 'Werk A');
+  assert.strictEqual(a.data.autor, 'Meier', 'autor from row 1');
+  assert.strictEqual(a.data.jahr, 1950, 'jahr filled from row 2');
+});
+
+test('per-id collision override (perId) beats the global strategy', () => {
+  const t = db.createDocType({ name: 'PerIdTyp', icon: '📥', fields: [{ label: 'Titel', field_type: 'text', required: true }] }, admin);
+  db.createRecord({ archiveId: 'PID-1', docTypeId: t.id, data: { titel: 'Alt' } }, admin);
+  db.createRecord({ archiveId: 'PID-2', docTypeId: t.id, data: { titel: 'Alt2' } }, admin);
+  // global skip, but PID-1 individually overwritten
+  const res = db.importRecords({
+    docTypeId: t.id,
+    rows: [{ archiveId: 'PID-1', data: { titel: 'Neu' }, sourceRowNumber: 2 }, { archiveId: 'PID-2', data: { titel: 'Neu2' }, sourceRowNumber: 3 }],
+    onDuplicate: 'skip',
+    perId: { 'pid-1': 'overwrite' },
+  }, admin);
+  assert.strictEqual(res.updated, 1);
+  assert.strictEqual(res.skipped.length, 1);
+  assert.strictEqual(db.getRecordByArchiveId('PID-1').data.titel, 'Neu');
+  assert.strictEqual(db.getRecordByArchiveId('PID-2').data.titel, 'Alt2', 'PID-2 left untouched');
+});
+
 test('findExistingArchiveIds reports collisions case-insensitively', () => {
   const set = db.findExistingArchiveIds(['imp-001', 'IMP-100', 'NICHT-DA']);
   assert.ok(set.has('imp-001'));

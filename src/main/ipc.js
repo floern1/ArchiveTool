@@ -242,7 +242,7 @@ function registerIpcHandlers(getWindow) {
       if (m.action === 'existing') {
         const target = type && type.fields.find((f) => f.name === m.targetName);
         if (!target) throw new db.AppError('VALIDATION', `Das Zielfeld „${m.targetName}“ existiert im Dokumenttyp nicht.`);
-        effective.push({ index: m.index, name: target.name, fieldType: target.field_type });
+        effective.push({ index: m.index, name: target.name, fieldType: target.field_type, label: target.label });
       } else if (m.action === 'new') {
         let name = importer.deriveFieldName(m.name || m.label || col.suggestedLabel);
         let base = name;
@@ -256,7 +256,7 @@ function registerIpcHandlers(getWindow) {
           field_type: fieldType,
           required: !!m.required,
         });
-        effective.push({ index: m.index, name, fieldType });
+        effective.push({ index: m.index, name, fieldType, label: String(m.label || col.suggestedLabel).trim() || name });
       }
     }
     return { effective, newFieldDefs };
@@ -318,7 +318,51 @@ function registerIpcHandlers(getWindow) {
     };
   });
 
-  handle('import:commit', ({ token, target, mapping, archiveId, onDuplicate, dedupeColumns, withinFileDuplicates }) => {
+  // For the manual resolution screen: return the actual duplicate groups (with
+  // their member rows) and the database collisions (with the existing record),
+  // each with an auto-suggested resolution the user can override. Capped so the
+  // payload stays reasonable; groups beyond the cap fall back to the automatic
+  // default at commit time.
+  const RESOLUTION_CAP = 400;
+
+  handle('import:buildResolution', ({ token, target, mapping, archiveId, dedupeColumns }) => {
+    requireAdmin();
+    const s = getImportSession(token);
+    const type = resolveTargetType(target);
+    const { effective } = resolveMapping(s, mapping, type);
+    const built = importer.buildImportRows(s.dataRows, effective, archiveId || { mode: 'generate', prefix: 'IMP-' });
+    const fields = effective.map((c) => ({ name: c.name, label: c.label || c.name, field_type: c.fieldType }));
+
+    const keyIndices = dedupeKeyIndices(archiveId, dedupeColumns);
+    const groups = keyIndices.length ? importer.groupDuplicateRows(s.dataRows, keyIndices) : [];
+    const within = groups.slice(0, RESOLUTION_CAP).map((g) => {
+      const members = g.members.map((i) => ({ rowNumber: i + 2, archiveId: built[i].archiveId, data: built[i].data }));
+      return { key: g.key, display: g.display, members, suggestedMaster: importer.mostCompleteIndex(members.map((m) => m.data)) };
+    });
+
+    const existingIds = db.findExistingArchiveIds(built.map((r) => r.archiveId));
+    const seen = new Set();
+    const collisions = [];
+    for (const r of built) {
+      if (!r.archiveId) continue;
+      const low = r.archiveId.toLowerCase();
+      if (existingIds.has(low) && !seen.has(low) && collisions.length < RESOLUTION_CAP) {
+        const ex = db.getRecordByArchiveId(r.archiveId);
+        collisions.push({ archiveId: r.archiveId, rowNumber: r.sourceRowNumber, incoming: r.data, existing: ex ? ex.data : {} });
+      }
+      seen.add(low);
+    }
+
+    return {
+      fields,
+      within,
+      withinTotal: groups.length,
+      collisions,
+      truncated: groups.length > RESOLUTION_CAP,
+    };
+  });
+
+  handle('import:commit', ({ token, target, mapping, archiveId, onDuplicate, dedupeColumns, withinFileDuplicates, manualResolutions }) => {
     const actor = requireAdmin();
     const s = getImportSession(token);
 
@@ -354,16 +398,51 @@ function registerIpcHandlers(getWindow) {
     }
 
     const built = importer.buildImportRows(s.dataRows, effective, archiveId || { mode: 'generate', prefix: 'IMP-' });
+    const keyIndices = dedupeKeyIndices(archiveId, dedupeColumns);
+    const within = manualResolutions && manualResolutions.within ? manualResolutions.within : {};
+    const collisionDecisions = manualResolutions && manualResolutions.collisions ? manualResolutions.collisions : {};
 
-    // Resolve redundant rows within the file (by the chosen key columns) before
-    // inserting: keep the first / most complete row per group, skip the rest.
+    // --- Step 1: resolve redundant rows within the file (by key columns) ---
     let toImport = built;
     const droppedDupes = [];
-    const keyIndices = dedupeKeyIndices(archiveId, dedupeColumns);
-    if ((withinFileDuplicates === 'first' || withinFileDuplicates === 'mostComplete') && keyIndices.length) {
-      const weights = withinFileDuplicates === 'mostComplete'
-        ? built.map((r) => Object.keys(r.data).length)
-        : null;
+    let mergedCount = 0;
+    if (withinFileDuplicates === 'manual' && keyIndices.length) {
+      // Per-group: merge into one record (auto-default master = most complete),
+      // or keep all members, honouring the user's per-group decisions.
+      const groups = importer.groupDuplicateRows(s.dataRows, keyIndices);
+      const consumed = new Set();
+      const out = [];
+      for (const g of groups) {
+        for (const i of g.members) consumed.add(i);
+        const dec = within[g.key] || null;
+        const memberData = g.members.map((i) => built[i].data);
+        if (dec && dec.action === 'keepAll') {
+          for (const i of g.members) out.push(built[i]);
+          continue;
+        }
+        let masterPos = dec && dec.masterRowNumber != null
+          ? g.members.findIndex((i) => i + 2 === dec.masterRowNumber)
+          : importer.mostCompleteIndex(memberData);
+        if (masterPos < 0) masterPos = importer.mostCompleteIndex(memberData);
+        let overrides = null;
+        if (dec && dec.overrides) {
+          overrides = {};
+          for (const [f, rn] of Object.entries(dec.overrides)) {
+            const idx = g.members.findIndex((i) => i + 2 === Number(rn));
+            if (idx >= 0) overrides[f] = idx;
+          }
+        }
+        const masterRow = built[g.members[masterPos]];
+        out.push({ archiveId: masterRow.archiveId, data: importer.mergeData(memberData, masterPos, overrides), sourceRowNumber: masterRow.sourceRowNumber });
+        for (let k = 0; k < g.members.length - 1; k++) {
+          droppedDupes.push({ archiveId: masterRow.archiveId, row: g.members[k] + 2, reason: 'Mit Master-Eintrag zusammengeführt (Datei-Dublette)' });
+        }
+        mergedCount++;
+      }
+      built.forEach((r, i) => { if (!consumed.has(i)) out.push(r); });
+      toImport = out;
+    } else if ((withinFileDuplicates === 'first' || withinFileDuplicates === 'mostComplete') && keyIndices.length) {
+      const weights = withinFileDuplicates === 'mostComplete' ? built.map((r) => Object.keys(r.data).length) : null;
       const dropIdx = importer.withinFileDropIndices(s.dataRows, keyIndices, weights);
       toImport = [];
       built.forEach((r, i) => {
@@ -375,16 +454,41 @@ function registerIpcHandlers(getWindow) {
       });
     }
 
-    const summary = db.importRecords({
-      docTypeId,
-      rows: toImport,
-      onDuplicate: onDuplicate === 'overwrite' ? 'overwrite' : 'skip',
-    }, actor);
+    // --- Step 2: manual per-collision decisions against the database ---
+    const perId = {};
+    if (onDuplicate === 'manual') {
+      for (const row of toImport) {
+        if (!row.archiveId) continue;
+        const low = row.archiveId.toLowerCase();
+        const dec = collisionDecisions[low];
+        if (!dec) continue; // not reviewed → default (skip) applies
+        if (dec.action === 'skip') {
+          perId[low] = 'skip';
+        } else if (dec.action === 'overwrite') {
+          perId[low] = 'overwrite';
+        } else if (dec.action === 'merge') {
+          const ex = db.getRecordByArchiveId(row.archiveId);
+          if (ex) {
+            const overrides = {};
+            if (dec.overrides) {
+              for (const [f, src] of Object.entries(dec.overrides)) overrides[f] = src === 'incoming' ? 1 : 0;
+            }
+            // existing record is the master (index 0); imported values are index 1.
+            row.data = importer.mergeData([ex.data, row.data], 0, overrides);
+            perId[low] = 'overwrite';
+          }
+        }
+      }
+    }
 
-    // Fold the dropped redundant rows into the reported result.
+    const globalDup = onDuplicate === 'overwrite' ? 'overwrite' : 'skip';
+    const summary = db.importRecords({ docTypeId, rows: toImport, onDuplicate: globalDup, perId }, actor);
+
+    // Fold the resolved file-duplicates into the reported result.
     summary.total += droppedDupes.length;
     summary.skipped = droppedDupes.concat(summary.skipped);
     summary.deduplicated = droppedDupes.length;
+    summary.merged = mergedCount;
 
     importSessions.delete(token);
     return { ...summary, docTypeId };

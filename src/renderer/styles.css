@@ -606,3 +606,9 @@ table.data tbody tr.clickable:hover { background: var(--surface-2); }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .btn.danger-soft { color: var(--danger); }
+
+.import-merge-card { padding: 14px 16px; margin-bottom: 12px; }
+.import-merge-head { display: flex; align-items: center; gap: 10px; }
+.import-merge-head select { width: auto; min-width: 200px; }
+.import-merge-card table.data td { vertical-align: middle; }
+.import-merge-card table.data select { width: 100%; }

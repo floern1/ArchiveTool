@@ -656,7 +656,13 @@ function findExistingArchiveIds(ids) {
  * and reported instead of aborting the whole import. Every created or updated
  * record is written to the change history just like a normal edit.
  */
-function importRecords({ docTypeId, rows, onDuplicate = 'skip' }, actor) {
+function getRecordByArchiveId(archiveId) {
+  const d = requireDb();
+  const row = d.prepare('SELECT * FROM records WHERE archive_id = ?').get(String(archiveId));
+  return row ? rowToRecord(row) : null;
+}
+
+function importRecords({ docTypeId, rows, onDuplicate = 'skip', perId = null }, actor) {
   const d = requireDb();
   const type = getDocType(docTypeId);
   const actorId = actor ? actor.id : null;
@@ -685,7 +691,10 @@ function importRecords({ docTypeId, rows, onDuplicate = 'skip' }, actor) {
         }
         const existing = findStmt.get(id);
         if (existing) {
-          if (onDuplicate === 'overwrite') {
+          // A per-id decision (from manual conflict resolution) overrides the
+          // global strategy for this specific archive id.
+          const mode = (perId && perId[lower]) ? perId[lower] : onDuplicate;
+          if (mode === 'overwrite') {
             // Validate the imported values merged onto the existing record, so
             // required fields already present in the record are kept. The
             // validated result only contains keys known to the type, so we then
@@ -798,6 +807,7 @@ module.exports = {
   updateRecord,
   deleteRecord,
   getRecordHistory,
+  getRecordByArchiveId,
   findExistingArchiveIds,
   importRecords,
   // dashboard

@@ -347,7 +347,13 @@ window.AT = window.AT || {};
         : { mode: 'generate', prefix: state.archiveId.prefix },
       dedupeColumns: state.dedupeColumns,
       withinFileDuplicates: state.withinFileDuplicates,
+      onDuplicate: state.onDuplicate,
+      manualResolutions: state.decisions || null,
     };
+  }
+
+  function isManual() {
+    return state.withinFileDuplicates === 'manual' || state.onDuplicate === 'manual';
   }
 
   function renderDedupeChooser(resultBox) {
@@ -417,7 +423,8 @@ window.AT = window.AT || {};
       h('div', { class: 'import-radio-row' },
         radio('imp-within', 'all', state.withinFileDuplicates === 'all', 'Alle importieren (nichts entfernen)', () => { state.withinFileDuplicates = 'all'; }),
         radio('imp-within', 'first', state.withinFileDuplicates === 'first', 'Nur den ersten Treffer je Schlüssel importieren', () => { state.withinFileDuplicates = 'first'; }),
-        radio('imp-within', 'mostComplete', state.withinFileDuplicates === 'mostComplete', 'Den am besten befüllten Eintrag je Schlüssel behalten', () => { state.withinFileDuplicates = 'mostComplete'; })));
+        radio('imp-within', 'mostComplete', state.withinFileDuplicates === 'mostComplete', 'Den am besten befüllten Eintrag je Schlüssel behalten', () => { state.withinFileDuplicates = 'mostComplete'; }),
+        radio('imp-within', 'manual', state.withinFileDuplicates === 'manual', '✋ Manuell prüfen & zusammenführen (Master + Feldauswahl)', () => { state.withinFileDuplicates = 'manual'; })));
 
     // Resolution for archive ids that already exist in the database.
     const hasCollisions = p.existingCollisions > 0;
@@ -425,7 +432,8 @@ window.AT = window.AT || {};
       h('label', { style: 'font-weight:600; display:block; margin-bottom:6px' }, 'Umgang mit bereits vorhandenen Archiv-IDs:'),
       h('div', { class: 'import-radio-row' },
         radio('imp-dup', 'skip', state.onDuplicate === 'skip', 'Überspringen (vorhandene Einträge unverändert lassen)', () => { state.onDuplicate = 'skip'; }),
-        radio('imp-dup', 'overwrite', state.onDuplicate === 'overwrite', 'Aktualisieren (importierte Felder in vorhandene Einträge übernehmen)', () => { state.onDuplicate = 'overwrite'; })));
+        radio('imp-dup', 'overwrite', state.onDuplicate === 'overwrite', 'Aktualisieren (importierte Felder in vorhandene Einträge übernehmen)', () => { state.onDuplicate = 'overwrite'; }),
+        radio('imp-dup', 'manual', state.onDuplicate === 'manual', '✋ Manuell prüfen & zusammenführen (Bestand vs. Import je Feld)', () => { state.onDuplicate = 'manual'; })));
 
     box.replaceChildren(
       h('div', { class: 'import-stats' }, items),
@@ -444,15 +452,37 @@ window.AT = window.AT || {};
         h('button', { class: 'btn', onclick: () => { state.step = 2; render(); } }, '← Zurück'),
         h('div', { class: 'spacer' }),
         h('button', { class: 'btn danger-soft', onclick: cancelImport }, 'Abbrechen'),
-        h('button', { class: 'btn primary', onclick: runImport }, '✅ Import starten')));
+        h('button', { class: 'btn primary', onclick: startImport },
+          isManual() ? 'Weiter zur manuellen Auflösung →' : '✅ Import starten')));
   }
 
-  async function runImport() {
+  // From step 3: either jump into manual review or import straight away.
+  async function startImport() {
+    if (isManual()) {
+      const res = await apiSafe('import:buildResolution', commitPayload());
+      if (!res) return;
+      const hasWithin = state.withinFileDuplicates === 'manual' && res.within.length > 0;
+      const hasColl = state.onDuplicate === 'manual' && res.collisions.length > 0;
+      if (!hasWithin && !hasColl) {
+        // Nothing to resolve manually → import directly.
+        return doCommit();
+      }
+      state.resolution = res;
+      initDecisions(res);
+      state.reviewPage = { within: 0, collisions: 0 };
+      state.step = 'review';
+      render();
+      return;
+    }
+    doCommit();
+  }
+
+  async function doCommit() {
     const overlay = h('div', { class: 'import-running' },
       h('div', { class: 'spinner' }), h('p', {}, `${state.totalRows.toLocaleString('de-DE')} Zeilen werden importiert – bitte warten …`));
     container.append(overlay);
     try {
-      const summary = await api('import:commit', { ...commitPayload(), onDuplicate: state.onDuplicate });
+      const summary = await api('import:commit', commitPayload());
       state.summary = summary;
       state.step = 4;
       render();
@@ -460,6 +490,185 @@ window.AT = window.AT || {};
       overlay.remove();
       toast(e.message, 'error');
     }
+  }
+
+  /* ---------------- review step: manual duplicate resolution ---------------- */
+
+  function initDecisions(res) {
+    const within = {};
+    for (const g of res.within) {
+      within[g.key] = { action: 'merge', masterRowNumber: g.members[g.suggestedMaster].rowNumber, overrides: {} };
+    }
+    const collisions = {};
+    for (const c of res.collisions) {
+      collisions[c.archiveId.toLowerCase()] = { action: 'merge', overrides: {} };
+    }
+    state.decisions = { within, collisions };
+  }
+
+  const normVal = (v) => String(v == null ? '' : v).trim().toLowerCase();
+  function shortVal(v) {
+    if (v === undefined || v === null || v === '') return '(leer)';
+    const s = String(v);
+    return s.length > 40 ? s.slice(0, 40) + '…' : s;
+  }
+
+  function fieldLabel(name) {
+    const f = state.resolution.fields.find((x) => x.name === name);
+    return f ? f.label : name;
+  }
+
+  function differingFieldNames(records) {
+    return state.resolution.fields
+      .map((f) => f.name)
+      .filter((name) => new Set(records.map((r) => normVal(r[name]))).size > 1);
+  }
+
+  function renderWithinGroup(g) {
+    const dec = state.decisions.within[g.key];
+    const body = h('div', {});
+
+    function renderBody() {
+      if (dec.action !== 'merge') { body.replaceChildren(); return; }
+      const datas = g.members.map((m) => m.data);
+      const diff = differingFieldNames(datas);
+      const masterRadios = h('div', { class: 'import-radio-row', style: 'flex-direction:row; flex-wrap:wrap; gap:10px' },
+        g.members.map((m) => radio(`master-${g.key}`, String(m.rowNumber), dec.masterRowNumber === m.rowNumber,
+          `Zeile ${m.rowNumber} (${Object.keys(m.data).length} Felder)`,
+          () => { dec.masterRowNumber = m.rowNumber; renderBody(); })));
+      const masterData = (g.members.find((m) => m.rowNumber === dec.masterRowNumber) || g.members[0]).data;
+      const rows = diff.map((name) => {
+        // Effective source shown as selected: explicit override, else the master
+        // (if it has a value), else the first member that fills this field.
+        let effRn = dec.overrides[name] != null ? dec.overrides[name] : dec.masterRowNumber;
+        if (dec.overrides[name] == null && (masterData[name] === undefined || masterData[name] === '')) {
+          const filler = g.members.find((m) => m.data[name] !== undefined && m.data[name] !== '');
+          if (filler) effRn = filler.rowNumber;
+        }
+        const sel = h('select', {
+          onchange: (e) => {
+            const rn = Number(e.target.value);
+            if (rn === dec.masterRowNumber) delete dec.overrides[name];
+            else dec.overrides[name] = rn;
+          },
+        }, g.members.map((m) => h('option', {
+          value: m.rowNumber,
+          selected: effRn === m.rowNumber,
+        }, `Zeile ${m.rowNumber}: ${shortVal(m.data[name])}`)));
+        return h('tr', {}, h('td', { class: 'import-col-head' }, fieldLabel(name)), h('td', {}, sel));
+      });
+      body.replaceChildren(
+        h('div', { style: 'margin:8px 0 4px; font-weight:600' }, 'Master-Eintrag (gewinnt bei Konflikten):'),
+        masterRadios,
+        diff.length
+          ? h('div', { class: 'table-wrap', style: 'margin-top:10px' },
+              h('table', { class: 'data' },
+                h('thead', {}, h('tr', {}, h('th', {}, 'Feld (unterschiedlich)'), h('th', {}, 'Wert übernehmen aus'))),
+                h('tbody', {}, rows)))
+          : h('p', { class: 'meta-line' }, 'Alle befüllten Felder sind identisch – es wird einfach zusammengeführt.'));
+    }
+
+    const actionSel = h('select', {
+      onchange: (e) => { dec.action = e.target.value; renderBody(); },
+    },
+      h('option', { value: 'merge', selected: dec.action === 'merge' }, 'Zusammenführen (ein Eintrag)'),
+      h('option', { value: 'keepAll', selected: dec.action === 'keepAll' }, 'Alle behalten (nicht zusammenführen)'));
+
+    renderBody();
+    return h('div', { class: 'card import-merge-card' },
+      h('div', { class: 'import-merge-head' },
+        h('div', {}, h('strong', {}, g.display || '(leer)'), ' ', h('span', { class: 'badge' }, `${g.members.length} Zeilen`)),
+        h('div', { class: 'spacer' }),
+        actionSel),
+      body);
+  }
+
+  function renderCollision(c) {
+    const dec = state.decisions.collisions[c.archiveId.toLowerCase()];
+    const body = h('div', {});
+
+    function renderBody() {
+      if (dec.action !== 'merge') { body.replaceChildren(); return; }
+      const diff = differingFieldNames([c.existing, c.incoming]);
+      const rows = diff.map((name) => {
+        const sel = h('select', {
+          onchange: (e) => {
+            if (e.target.value === 'existing') delete dec.overrides[name];
+            else dec.overrides[name] = 'incoming';
+          },
+        },
+          h('option', { value: 'existing', selected: (dec.overrides[name] || 'existing') === 'existing' }, `Bestand: ${shortVal(c.existing[name])}`),
+          h('option', { value: 'incoming', selected: dec.overrides[name] === 'incoming' }, `Import: ${shortVal(c.incoming[name])}`));
+        return h('tr', {}, h('td', { class: 'import-col-head' }, fieldLabel(name)), h('td', {}, sel));
+      });
+      body.replaceChildren(
+        diff.length
+          ? h('div', { class: 'table-wrap', style: 'margin-top:10px' },
+              h('table', { class: 'data' },
+                h('thead', {}, h('tr', {}, h('th', {}, 'Feld (unterschiedlich)'), h('th', {}, 'Wert übernehmen'))),
+                h('tbody', {}, rows)))
+          : h('p', { class: 'meta-line' }, 'Importierte Felder stimmen mit dem Bestand überein – nichts zu entscheiden.'));
+    }
+
+    const actionSel = h('select', {
+      onchange: (e) => { dec.action = e.target.value; renderBody(); },
+    },
+      h('option', { value: 'merge', selected: dec.action === 'merge' }, 'Zusammenführen (Bestand + Import)'),
+      h('option', { value: 'overwrite', selected: dec.action === 'overwrite' }, 'Mit Import überschreiben'),
+      h('option', { value: 'skip', selected: dec.action === 'skip' }, 'Überspringen (Bestand behalten)'));
+
+    renderBody();
+    return h('div', { class: 'card import-merge-card' },
+      h('div', { class: 'import-merge-head' },
+        h('div', {}, h('strong', {}, c.archiveId), ' ', h('span', { class: 'badge amber' }, 'bereits im Bestand')),
+        h('div', { class: 'spacer' }),
+        actionSel),
+      body);
+  }
+
+  function pager(list, pageKey, sectionTitle, renderCard) {
+    const PER = 20;
+    const page = state.reviewPage[pageKey] || 0;
+    const pages = Math.max(1, Math.ceil(list.length / PER));
+    const slice = list.slice(page * PER, page * PER + PER);
+    return h('div', { class: 'import-section', style: 'padding:0' },
+      h('div', { class: 'import-fields-head', style: 'margin:6px 0 10px' },
+        h('h3', {}, sectionTitle),
+        h('div', { class: 'spacer' }),
+        pages > 1 ? h('span', { class: 'meta-line' }, `Seite ${page + 1}/${pages}`) : null,
+        pages > 1 ? h('button', { class: 'btn small', disabled: page === 0, onclick: () => { state.reviewPage[pageKey] = page - 1; render(); } }, '← Zurück') : null,
+        pages > 1 ? h('button', { class: 'btn small', disabled: page >= pages - 1, onclick: () => { state.reviewPage[pageKey] = page + 1; render(); } }, 'Weiter →') : null),
+      slice.map(renderCard));
+  }
+
+  function renderReview() {
+    const res = state.resolution;
+    const sections = [];
+    if (state.withinFileDuplicates === 'manual' && res.within.length) {
+      sections.push(pager(res.within, 'within',
+        `Dubletten in der Datei (${res.withinTotal}${res.truncated ? ', gekürzt' : ''})`, renderWithinGroup));
+    }
+    if (state.onDuplicate === 'manual' && res.collisions.length) {
+      sections.push(pager(res.collisions, 'collisions',
+        `Kollisionen mit der Datenbank (${res.collisions.length})`, renderCollision));
+    }
+
+    container.replaceChildren(
+      header(),
+      stepper('review'),
+      h('div', { class: 'card import-section' },
+        h('h3', {}, 'Manuelle Auflösung'),
+        h('p', { class: 'view-sub', style: 'margin:0' },
+          'Alle Gruppen sind mit einem Auto-Vorschlag vorbelegt (Master = am besten befüllt). ',
+          'Passen Sie nur an, was Sie möchten – der Rest wird automatisch übernommen.'),
+        res.truncated ? h('p', { class: 'meta-line' },
+          `Hinweis: Es werden die ersten ${res.within.length} Gruppen zur Bearbeitung angezeigt; weitere werden automatisch (am besten befüllt) zusammengeführt.`) : null),
+      h('div', {}, sections),
+      h('div', { class: 'import-actions' },
+        h('button', { class: 'btn', onclick: () => { state.step = 3; render(); } }, '← Zurück'),
+        h('div', { class: 'spacer' }),
+        h('button', { class: 'btn danger-soft', onclick: cancelImport }, 'Abbrechen'),
+        h('button', { class: 'btn primary', onclick: doCommit }, '✅ Import starten')));
   }
 
   /* ---------------- step 4: result ---------------- */
@@ -483,6 +692,7 @@ window.AT = window.AT || {};
           h('div', { class: 'import-stats', style: 'justify-content:center; margin-top:18px' },
             h('div', { class: 'import-stat' }, h('span', { class: 'import-stat-num green' }, s.created.toLocaleString('de-DE')), h('span', {}, 'neu angelegt')),
             h('div', { class: 'import-stat' }, h('span', { class: 'import-stat-num' }, s.updated.toLocaleString('de-DE')), h('span', {}, 'aktualisiert')),
+            s.merged ? h('div', { class: 'import-stat' }, h('span', { class: 'import-stat-num' }, s.merged.toLocaleString('de-DE')), h('span', {}, 'zusammengeführt')) : null,
             h('div', { class: 'import-stat' }, h('span', { class: 'import-stat-num amber' }, s.skipped.length.toLocaleString('de-DE')), h('span', {}, 'übersprungen')),
             h('div', { class: 'import-stat' }, h('span', { class: `import-stat-num ${s.failed.length ? 'red' : ''}` }, s.failed.length.toLocaleString('de-DE')), h('span', {}, 'fehlerhaft')))),
         detailList(s.skipped, 'übersprungen', 'amber'),
@@ -507,11 +717,14 @@ window.AT = window.AT || {};
   }
 
   function stepper(active) {
-    const steps = [[2, 'Felder zuordnen'], [3, 'Dubletten prüfen'], [4, 'Ergebnis']];
+    const steps = [{ id: 2, label: 'Felder zuordnen' }, { id: 3, label: 'Dubletten prüfen' }];
+    if (isManual()) steps.push({ id: 'review', label: 'Zusammenführen' });
+    steps.push({ id: 4, label: 'Ergebnis' });
+    const activeIdx = steps.findIndex((s) => s.id === active);
     return h('div', { class: 'import-stepper' },
-      steps.map(([n, label], i) => h('div', {
-        class: 'import-step' + (n === active ? ' active' : '') + (n < active ? ' done' : ''),
-      }, h('span', { class: 'import-step-no' }, i + 1), label)));
+      steps.map((s, i) => h('div', {
+        class: 'import-step' + (s.id === active ? ' active' : '') + (activeIdx >= 0 && i < activeIdx ? ' done' : ''),
+      }, h('span', { class: 'import-step-no' }, i + 1), s.label)));
   }
 
   function radio(name, value, checked, label, onchange) {
@@ -534,6 +747,7 @@ window.AT = window.AT || {};
     if (state.step === 1) return renderStep1();
     if (state.step === 2) return renderStep2();
     if (state.step === 3) return renderStep3();
+    if (state.step === 'review') return renderReview();
     if (state.step === 4) return renderResult();
   }
 
