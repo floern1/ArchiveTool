@@ -8,12 +8,16 @@ window.AT = window.AT || {};
 (function (AT) {
   const { h, api, apiSafe, toast } = AT;
 
+  const PAGE_SIZES = [25, 50, 100, 200, 500];
+
   const state = {
     docTypeId: 0,        // 0 = all types
     search: '',
     fieldFilters: {},
     sort: 'archive_id',
     dir: 'asc',
+    sort2: '',           // optional secondary sort (tie-break); '' = none
+    dir2: 'asc',
     offset: 0,
     limit: 50,
     showFilters: false,
@@ -254,7 +258,7 @@ window.AT = window.AT || {};
       footer: [
         h('div', { class: 'left' },
           h('button', { class: 'btn', onclick: () => { openHistory(record); } }, '🕘 Historie'),
-          h('button', {
+          AT.isAdmin() ? h('button', {
             class: 'btn danger',
             onclick: async () => {
               const yes = await AT.confirmDialog({
@@ -276,15 +280,15 @@ window.AT = window.AT || {};
                 }
               }
             },
-          }, '🗑️ Löschen')),
+          }, '🗑️ Löschen') : null),
         h('button', { class: 'btn', onclick: () => modal.close() }, 'Schließen'),
-        h('button', {
+        AT.isAdmin() ? h('button', {
           class: 'btn primary',
           onclick: () => {
             modal.close();
             openRecordForm({ record, onSaved: refreshList });
           },
-        }, '✏️ Bearbeiten'),
+        }, '✏️ Bearbeiten') : null,
       ],
     });
   }
@@ -343,7 +347,9 @@ window.AT = window.AT || {};
     AT.openModal({
       title: `Historie: ${record.archive_id}`,
       wide: true,
-      body: items.length ? h('div', {}, items) : h('p', {}, 'Keine Historie vorhanden.'),
+      body: items.length
+        ? h('div', { class: 'history-scroll' }, items)
+        : h('p', {}, 'Keine Historie vorhanden.'),
     });
   }
 
@@ -358,6 +364,8 @@ window.AT = window.AT || {};
       fieldFilters: state.docTypeId ? state.fieldFilters : undefined,
       sort: state.sort,
       dir: state.dir,
+      sort2: state.sort2 || undefined,
+      dir2: state.dir2,
       limit: state.limit,
       offset: state.offset,
     });
@@ -407,11 +415,17 @@ window.AT = window.AT || {};
     const from = total === 0 ? 0 : offset + 1;
     const to = Math.min(offset + limit, total);
 
+    const pageSizeSelect = h('select', {
+      class: 'page-size', title: 'Einträge pro Seite',
+      onchange: (e) => { state.limit = Number(e.target.value); state.offset = 0; refreshList(); },
+    }, PAGE_SIZES.map((n) => h('option', { value: n, selected: n === limit }, `${n} pro Seite`)));
+
     listEl.replaceChildren(
       h('div', { class: 'card table-wrap' },
         h('table', { class: 'data' }, h('thead', {}, head), h('tbody', {}, rows))),
       h('div', { class: 'pagination' },
         h('span', {}, `${from}–${to} von ${total.toLocaleString('de-DE')} Einträgen`),
+        pageSizeSelect,
         h('button', {
           class: 'btn small', disabled: offset === 0,
           onclick: () => { state.offset = Math.max(0, offset - limit); refreshList(); },
@@ -460,6 +474,54 @@ window.AT = window.AT || {};
             }))));
   }
 
+  /* ---------------- sort controls ---------------- */
+
+  // Sortable keys: the built-in columns plus every input field of the selected
+  // document type. A `field:<name>` key sorts by the value inside the JSON data.
+  function sortOptionList(type) {
+    const opts = [
+      { value: 'archive_id', label: 'Archiv-ID' },
+      { value: 'updated_at', label: 'Zuletzt geändert' },
+      { value: 'created_at', label: 'Angelegt am' },
+    ];
+    if (type) for (const f of type.fields) opts.push({ value: 'field:' + f.name, label: f.label });
+    return opts;
+  }
+
+  function renderSortControls(wrap) {
+    const type = state.docTypeId ? typeById(state.docTypeId) : null;
+    const opts = sortOptionList(type);
+    const values = new Set(opts.map((o) => o.value));
+    // Field sorts only exist while their type is selected – fall back otherwise.
+    if (!values.has(state.sort)) { state.sort = 'archive_id'; state.dir = 'asc'; }
+    if (state.sort2 && !values.has(state.sort2)) state.sort2 = '';
+
+    const dirSelect = (cur, onchange) => h('select', {
+      class: 'sort-dir',
+      onchange: (e) => { onchange(e.target.value); state.offset = 0; refreshList(); },
+    },
+      h('option', { value: 'asc', selected: cur === 'asc' }, 'aufst. (A→Z, alt→neu)'),
+      h('option', { value: 'desc', selected: cur === 'desc' }, 'abst. (Z→A, neu→alt)'));
+
+    const primary = h('select', {
+      onchange: (e) => { state.sort = e.target.value; state.offset = 0; refreshList(); },
+    }, opts.map((o) => h('option', { value: o.value, selected: o.value === state.sort }, o.label)));
+
+    const secondary = h('select', {
+      onchange: (e) => { state.sort2 = e.target.value; state.offset = 0; renderSortControls(wrap); refreshList(); },
+    },
+      h('option', { value: '', selected: !state.sort2 }, '– keine –'),
+      opts.map((o) => h('option', { value: o.value, selected: o.value === state.sort2 }, o.label)));
+
+    AT.setChildren(wrap,
+      h('span', { class: 'sort-label' }, 'Sortieren nach'),
+      primary,
+      dirSelect(state.dir, (v) => { state.dir = v; }),
+      h('span', { class: 'sort-label' }, 'dann nach'),
+      secondary,
+      state.sort2 ? dirSelect(state.dir2, (v) => { state.dir2 = v; }) : null);
+  }
+
   /* ---------------- view entry point ---------------- */
 
   AT.views = AT.views || {};
@@ -473,11 +535,14 @@ window.AT = window.AT || {};
 
     const filterPanel = h('div', { class: 'card filter-panel hidden' });
 
+    const sortWrap = h('div', { class: 'sort-controls' });
+
     const typeSelect = h('select', {
       onchange: () => {
         state.docTypeId = Number(typeSelect.value);
         state.fieldFilters = {};
         state.offset = 0;
+        renderSortControls(sortWrap);
         renderFilterPanel(filterPanel);
         refreshList();
       },
@@ -497,27 +562,14 @@ window.AT = window.AT || {};
       }, 300),
     });
 
-    const sortSelect = h('select', {
-      onchange: () => {
-        const [sort, dir] = sortSelect.value.split(':');
-        state.sort = sort;
-        state.dir = dir;
-        refreshList();
-      },
-    },
-      [['archive_id:asc', 'Archiv-ID (A–Z)'],
-       ['archive_id:desc', 'Archiv-ID (Z–A)'],
-       ['updated_at:desc', 'Zuletzt geändert'],
-       ['created_at:desc', 'Zuletzt angelegt']]
-        .map(([v, label]) => h('option', { value: v, selected: `${state.sort}:${state.dir}` === v }, label)));
-
     container.replaceChildren(
       h('div', { class: 'view-header' },
         h('div', {},
           h('h2', {}, 'Archiv'),
-          h('p', { class: 'view-sub' }, 'Alle Einträge des Vereinsarchivs')),
+          h('p', { class: 'view-sub' },
+            AT.isAdmin() ? 'Alle Einträge des Vereinsarchivs' : 'Alle Einträge des Vereinsarchivs (Lesezugriff)')),
         h('div', { class: 'spacer' }),
-        h('button', {
+        AT.isAdmin() ? h('button', {
           class: 'btn primary',
           onclick: () => {
             if (docTypes.length === 0) {
@@ -526,11 +578,10 @@ window.AT = window.AT || {};
             }
             openRecordForm({ presetTypeId: state.docTypeId || docTypes[0].id, onSaved: refreshList });
           },
-        }, '＋ Neuer Eintrag')),
+        }, '＋ Neuer Eintrag') : null),
       h('div', { class: 'toolbar' },
         typeSelect,
         searchInput,
-        sortSelect,
         h('button', {
           class: 'btn',
           onclick: () => {
@@ -542,9 +593,11 @@ window.AT = window.AT || {};
             renderFilterPanel(filterPanel);
           },
         }, '⚙ Feldfilter')),
+      h('div', { class: 'toolbar sort-toolbar' }, sortWrap),
       filterPanel,
       h('div', { id: 'records-list' }));
 
+    renderSortControls(sortWrap);
     renderFilterPanel(filterPanel);
     await refreshList();
   };
