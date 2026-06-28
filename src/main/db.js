@@ -25,9 +25,39 @@ const crypto = require('crypto');
 const Database = require('better-sqlite3');
 const { hashPassword, verifyPassword } = require('./auth');
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 const FIELD_TYPES = ['text', 'textarea', 'number', 'date', 'filepath', 'boolean', 'select'];
+
+/**
+ * Allowed EAD roles a document-type field can play in an EAD(DDB) Findbuch
+ * export. `none` (the default) means the field is not exported. `unittitle` is
+ * mandatory per type when exporting (the Verzeichnungseinheit title). The other
+ * roles map onto optional EAD elements. The archive id is always exported as
+ * <unitid> and the persistent <c id="…">, so it needs no role.
+ */
+const EAD_FIELD_ROLES = ['none', 'unittitle', 'unitdate', 'scopecontent', 'extent', 'genreform', 'language', 'accessrestrict'];
+
+/**
+ * Allowed values for <corpname role="…"> (the Archivsparte), taken verbatim
+ * from the Archivportal NRW manual (chapter 3.2.2, item 5). The portal rejects
+ * any other value, so this list must match exactly.
+ */
+const EAD_SPARTEN = [
+  'Staatliche Archive',
+  'Kommunale Archive',
+  'Kirchliche Archive',
+  'Herrschafts- und Familienarchive',
+  'Wirtschaftsarchive',
+  'Archive der Parlamente, politischen Parteien, Stiftungen und Verbände',
+  'Medienarchive',
+  'Archive der Hochschulen sowie wissenschaftlicher Institutionen',
+  'Sonstige',
+  'Aggregator',
+];
+
+/** Keys stored in the app_meta table (institution-wide EAD export settings). */
+const META_KEYS = ['archive_name', 'archive_sparte', 'archive_isil', 'archive_address', 'bestand_signatur', 'bestand_titel'];
 
 /** Alphanumeric ID, separators . _ / - allowed inside (common in archive signatures). */
 const ARCHIVE_ID_RE = /^[A-Za-z0-9](?:[A-Za-z0-9._/ -]*[A-Za-z0-9])?$/;
@@ -87,6 +117,7 @@ function migrate() {
   const tx = db.transaction(() => {
     if (v < 1) migrateV1();
     if (v < 2) migrateV2();
+    if (v < 3) migrateV3();
     db.pragma(`user_version = ${SCHEMA_VERSION}`);
   });
   tx();
@@ -164,6 +195,24 @@ function migrateV1() {
 function migrateV2() {
   db.exec('ALTER TABLE record_history ADD COLUMN batch_id TEXT');
   db.exec('CREATE INDEX IF NOT EXISTS idx_history_batch ON record_history(batch_id)');
+}
+
+/**
+ * v3: groundwork for the EAD(DDB) export to archive.nrw.de.
+ *
+ *  - `app_meta`: institution-wide settings (archive name, Sparte, ISIL, …) that
+ *    travel inside the database, not in the machine-local settings file.
+ *  - `doc_type_fields.ead_role`: maps a field onto an EAD Findbuch element
+ *    (unittitle, unitdate, …) so the database is self-describing for the export.
+ */
+function migrateV3() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS app_meta (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+  `);
+  db.exec("ALTER TABLE doc_type_fields ADD COLUMN ead_role TEXT NOT NULL DEFAULT 'none'");
 }
 
 /* ------------------------------------------------------------------ */
@@ -283,6 +332,10 @@ function validateFieldDefs(fields) {
       }
       options = JSON.stringify(opts);
     }
+    const eadRole = f.ead_role == null || f.ead_role === '' ? 'none' : String(f.ead_role);
+    if (!EAD_FIELD_ROLES.includes(eadRole)) {
+      throw new AppError('VALIDATION', `Ungültige EAD-Rolle: ${eadRole}`);
+    }
     return {
       name,
       label,
@@ -290,6 +343,7 @@ function validateFieldDefs(fields) {
       required: f.required ? 1 : 0,
       options,
       sort_order: i,
+      ead_role: eadRole,
     };
   });
 }
@@ -386,7 +440,7 @@ function checkPassword(userId, password) {
 
 function rowToDocType(row, d) {
   const fields = d.prepare(
-    'SELECT id, name, label, field_type, required, options, sort_order FROM doc_type_fields WHERE doc_type_id = ? ORDER BY sort_order, id'
+    'SELECT id, name, label, field_type, required, options, sort_order, ead_role FROM doc_type_fields WHERE doc_type_id = ? ORDER BY sort_order, id'
   ).all(row.id).map((f) => ({ ...f, required: !!f.required, options: f.options ? JSON.parse(f.options) : null }));
   const recordCount = d.prepare('SELECT COUNT(*) AS n FROM records WHERE doc_type_id = ?').get(row.id).n;
   return { ...row, fields, recordCount };
@@ -421,10 +475,10 @@ function createDocType({ name, icon, fields }, actor) {
       throw e;
     }
     const ins = d.prepare(
-      'INSERT INTO doc_type_fields (doc_type_id, name, label, field_type, required, options, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO doc_type_fields (doc_type_id, name, label, field_type, required, options, sort_order, ead_role) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
     );
     for (const f of defs) {
-      ins.run(info.lastInsertRowid, f.name, f.label, f.field_type, f.required, f.options, f.sort_order);
+      ins.run(info.lastInsertRowid, f.name, f.label, f.field_type, f.required, f.options, f.sort_order, f.ead_role);
     }
     return info.lastInsertRowid;
   });
@@ -451,10 +505,10 @@ function updateDocType(id, { name, icon, fields }) {
     // therefore unaffected (values of removed fields stay in the records).
     d.prepare('DELETE FROM doc_type_fields WHERE doc_type_id = ?').run(id);
     const ins = d.prepare(
-      'INSERT INTO doc_type_fields (doc_type_id, name, label, field_type, required, options, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO doc_type_fields (doc_type_id, name, label, field_type, required, options, sort_order, ead_role) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
     );
     for (const f of defs) {
-      ins.run(id, f.name, f.label, f.field_type, f.required, f.options, f.sort_order);
+      ins.run(id, f.name, f.label, f.field_type, f.required, f.options, f.sort_order, f.ead_role);
     }
   });
   tx();
@@ -1049,6 +1103,39 @@ function getUserHistory(userId, { limit } = {}) {
 }
 
 /* ------------------------------------------------------------------ */
+/* App meta: institution-wide settings for the EAD export              */
+/* ------------------------------------------------------------------ */
+
+/** All known meta keys as an object, with '' for keys not set yet. */
+function getMeta() {
+  const d = requireDb();
+  const rows = d.prepare('SELECT key, value FROM app_meta').all();
+  const stored = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+  const out = {};
+  for (const key of META_KEYS) out[key] = stored[key] != null ? stored[key] : '';
+  return out;
+}
+
+/** Upsert the given meta keys; unknown keys are ignored. Returns getMeta(). */
+function setMeta(values) {
+  const d = requireDb();
+  if (values == null || typeof values !== 'object') {
+    throw new AppError('VALIDATION', 'Ungültige Metadaten.');
+  }
+  const up = d.prepare(
+    'INSERT INTO app_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+  );
+  const tx = d.transaction(() => {
+    for (const key of META_KEYS) {
+      if (!(key in values)) continue;
+      up.run(key, String(values[key] == null ? '' : values[key]).trim());
+    }
+  });
+  tx();
+  return getMeta();
+}
+
+/* ------------------------------------------------------------------ */
 /* Dashboard                                                           */
 /* ------------------------------------------------------------------ */
 
@@ -1099,6 +1186,9 @@ function getStats() {
 module.exports = {
   AppError,
   FIELD_TYPES,
+  EAD_FIELD_ROLES,
+  EAD_SPARTEN,
+  META_KEYS,
   openDatabase,
   closeDatabase,
   isOpen,
@@ -1132,6 +1222,9 @@ module.exports = {
   getRecordsDataByArchiveIds,
   findExistingArchiveIds,
   importRecords,
+  // app meta (EAD export settings)
+  getMeta,
+  setMeta,
   // dashboard
   getStats,
 };

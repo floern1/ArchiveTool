@@ -157,6 +157,18 @@ window.AT = window.AT || {};
     select: 'Auswahlliste',
   };
 
+  // EAD(DDB) Findbuch role a field plays in the export to archive.nrw.de.
+  AT.EAD_ROLE_LABELS = {
+    none: '– kein EAD-Export –',
+    unittitle: 'Titel (unittitle)',
+    unitdate: 'Laufzeit (unitdate)',
+    scopecontent: 'Enthält/Beschreibung (scopecontent)',
+    extent: 'Umfang (extent)',
+    genreform: 'Archivalientyp (genreform)',
+    language: 'Sprache (language)',
+    accessrestrict: 'Zugangsbeschränkung (accessrestrict)',
+  };
+
   AT.formatFieldValue = function (field, value) {
     if (value === undefined || value === null || value === '') return '–';
     switch (field.field_type) {

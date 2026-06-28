@@ -15,7 +15,7 @@ window.AT = window.AT || {};
   /* ---------------- type editor modal ---------------- */
 
   function emptyField() {
-    return { name: '', label: '', field_type: 'text', required: false, options: [] };
+    return { name: '', label: '', field_type: 'text', required: false, options: [], ead_role: 'none' };
   }
 
   function openTypeEditor(type, onSaved) {
@@ -60,6 +60,12 @@ window.AT = window.AT || {};
                 oninput: (e) => { f.options = e.target.value.split('\n'); },
               }))
           : null;
+        const eadInput = h('div', { class: 'field-ead-input' },
+          h('span', { class: 'field-ead-label' }, 'EAD-Rolle (Export Archivportal):'),
+          h('select', {
+            onchange: (e) => { f.ead_role = e.target.value; },
+          }, Object.entries(AT.EAD_ROLE_LABELS).map(([v, label]) =>
+            h('option', { value: v, selected: (f.ead_role || 'none') === v }, label))));
         rows.push(h('div', { class: 'field-editor-row' },
           h('input', {
             type: 'text', value: f.label, placeholder: 'z. B. Titel, Autor, Jahr …',
@@ -87,7 +93,8 @@ window.AT = window.AT || {};
               class: 'icon-btn', type: 'button', title: 'Feld entfernen',
               onclick: () => { fields.splice(i, 1); renderFieldRows(); },
             }, '✕')),
-          optionsInput));
+          optionsInput,
+          eadInput));
       });
       rows.push(h('div', { style: 'padding-top:10px' },
         h('button', {

@@ -715,6 +715,101 @@ test('write from a second connection is detected as conflict', () => {
   }, admin));
 });
 
+console.log('\n— EAD-Export (Archivportal NRW) —');
+
+const eadExport = require('../src/main/eadExport');
+
+test('ead_role wird je Dokumenttyp-Feld gespeichert', () => {
+  const t = db.createDocType({
+    name: 'EAD-Typ', icon: '🗂️', fields: [
+      { label: 'Titel', field_type: 'text', required: true, ead_role: 'unittitle' },
+      { label: 'Laufzeit', field_type: 'date', ead_role: 'unitdate' },
+      { label: 'Notiz', field_type: 'textarea' },
+    ],
+  }, admin);
+  const fresh = db.getDocType(t.id);
+  assert.strictEqual(fresh.fields[0].ead_role, 'unittitle');
+  assert.strictEqual(fresh.fields[1].ead_role, 'unitdate');
+  assert.strictEqual(fresh.fields[2].ead_role, 'none');
+});
+
+test('ungültige EAD-Rolle wird abgelehnt', () => {
+  expectError('VALIDATION', () => db.createDocType({
+    name: 'Kaputt-Typ', fields: [{ label: 'X', field_type: 'text', ead_role: 'bogus' }],
+  }, admin));
+});
+
+test('app_meta: setMeta/getMeta roundtrip, unbekannte Schlüssel ignoriert', () => {
+  const saved = db.setMeta({ archive_name: 'Stadtarchiv Test', archive_sparte: 'Kommunale Archive', unknown: 'x' });
+  assert.strictEqual(saved.archive_name, 'Stadtarchiv Test');
+  assert.strictEqual(saved.archive_sparte, 'Kommunale Archive');
+  assert.strictEqual(saved.unknown, undefined);
+  assert.strictEqual(db.getMeta().archive_name, 'Stadtarchiv Test');
+});
+
+test('validateForExport meldet fehlenden Titel und Pflicht-Metadaten', () => {
+  const t = db.createDocType({
+    name: 'EAD-Val', fields: [
+      { label: 'Titel', field_type: 'text', ead_role: 'unittitle' },
+    ],
+  }, admin);
+  const fields = db.getDocType(t.id).fields;
+  const records = [{ archive_id: 'V-1', data: { titel: '' } }];
+  const report = eadExport.validateForExport({ meta: {}, findbuch: {}, records, fields });
+  assert.strictEqual(report.ok, false);
+  assert.ok(report.metaProblems.some((p) => /Archivname/.test(p)));
+  assert.ok(report.metaProblems.some((p) => /eadid/i.test(p)));
+  assert.strictEqual(report.recordProblems.length, 1);
+  assert.ok(/Titel/.test(report.recordProblems[0].problems.join(' ')));
+});
+
+test('validateForExport ist ok bei vollständigen Daten', () => {
+  const fields = [{ name: 'titel', label: 'Titel', field_type: 'text', ead_role: 'unittitle' }];
+  const meta = { archive_name: 'Stadtarchiv', archive_sparte: 'Kommunale Archive', archive_isil: 'DE-1' };
+  const findbuch = { eadid: 'DE-1_F1', titleproper: 'Bestand', unitid: 'F 1' };
+  const records = [{ archive_id: 'V-1', data: { titel: 'Ein Titel' } }];
+  const report = eadExport.validateForExport({ meta, findbuch, records, fields });
+  assert.strictEqual(report.ok, true, JSON.stringify(report.metaProblems.concat(report.recordProblems)));
+  assert.strictEqual(report.exportableCount, 1);
+});
+
+test('buildFindbuchXml: ein <c> je Record, unitid = archive_id, unittitle befüllt', () => {
+  const fields = [
+    { name: 'titel', label: 'Titel', field_type: 'text', ead_role: 'unittitle' },
+    { name: 'laufzeit', label: 'Laufzeit', field_type: 'date', ead_role: 'unitdate' },
+  ];
+  const meta = { archive_name: 'Stadtarchiv', archive_sparte: 'Kommunale Archive', archive_isil: 'DE-1' };
+  const findbuch = { eadid: 'DE-1_F1', titleproper: 'Fotobestand', unitid: 'F 1' };
+  const records = [
+    { archive_id: 'FOTO-1', data: { titel: 'Marktplatz', laufzeit: '1952-03-01' } },
+    { archive_id: 'FOTO-2', data: { titel: 'Rathaus' } },
+  ];
+  const xml = eadExport.buildFindbuchXml({ meta, findbuch, records, fields });
+  assert.ok(xml.startsWith('<?xml'));
+  assert.strictEqual((xml.match(/<c level="file"/g) || []).length, 2);
+  assert.ok(xml.includes('<unitid>FOTO-1</unitid>'));
+  assert.ok(xml.includes('<unittitle>Marktplatz</unittitle>'));
+  assert.ok(xml.includes('<unitdate normal="1952-03-01">1952-03-01</unitdate>'));
+  assert.ok(xml.includes('type="Findbuch"'));
+  assert.ok(xml.includes('role="Kommunale Archive"'));
+});
+
+test('buildFindbuchXml: XML-Sonderzeichen werden escaped', () => {
+  const fields = [{ name: 'titel', label: 'Titel', field_type: 'text', ead_role: 'unittitle' }];
+  const meta = { archive_name: 'A & B <Archiv>', archive_sparte: 'Sonstige' };
+  const findbuch = { eadid: 'X1', titleproper: 'T', unitid: 'S1' };
+  const records = [{ archive_id: 'R-1', data: { titel: 'Müller & Sohn <gmbh> "alt"' } }];
+  const xml = eadExport.buildFindbuchXml({ meta, findbuch, records, fields });
+  assert.ok(xml.includes('Müller &amp; Sohn &lt;gmbh&gt; &quot;alt&quot;'));
+  assert.ok(xml.includes('A &amp; B &lt;Archiv&gt;'));
+  assert.ok(!/<unittitle>Müller & Sohn/.test(xml));
+});
+
+test('toXmlId macht aus Signaturen gültige XML-IDs', () => {
+  assert.strictEqual(eadExport.toXmlId('F 1/2-3'), 'F_1_2-3');
+  assert.strictEqual(eadExport.toXmlId('1952'), '_1952');
+});
+
 db.closeDatabase();
 fs.rmSync(tmpDir, { recursive: true, force: true });
 

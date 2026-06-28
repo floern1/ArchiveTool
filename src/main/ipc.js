@@ -15,6 +15,7 @@ const fs = require('fs');
 const db = require('./db');
 const settings = require('./settings');
 const importer = require('./import');
+const eadExport = require('./eadExport');
 
 const session = { user: null };
 
@@ -537,6 +538,76 @@ function registerIpcHandlers(getWindow) {
 
     importSessions.delete(token);
     return { ...summary, docTypeId };
+  });
+
+  /* ----- EAD export (archive.nrw.de) ----- */
+
+  // Load every record of the export selection, paging past the listRecords cap.
+  function gatherRecords({ docTypeId, search, fieldFilters }) {
+    const all = [];
+    const limit = 500;
+    let offset = 0;
+    for (;;) {
+      const page = db.listRecords({ docTypeId, search, fieldFilters, limit, offset });
+      all.push(...page.records);
+      offset += limit;
+      if (offset >= page.total || page.records.length === 0) break;
+    }
+    return all;
+  }
+
+  // Resolve the exported type's fields, applying per-export EAD-role overrides
+  // ({ fieldName: role }) on top of the persisted ead_role of each field.
+  function exportFields(type, roleOverrides) {
+    return type.fields.map((f) => ({
+      name: f.name,
+      label: f.label,
+      field_type: f.field_type,
+      ead_role: roleOverrides && roleOverrides[f.name] ? roleOverrides[f.name] : (f.ead_role || 'none'),
+    }));
+  }
+
+  function buildExportContext({ docTypeId, search, fieldFilters, roleOverrides }) {
+    if (!docTypeId) throw new db.AppError('VALIDATION', 'Bitte wählen Sie einen Dokumenttyp für den Export.');
+    const type = db.getDocType(docTypeId);
+    const fields = exportFields(type, roleOverrides);
+    const records = gatherRecords({ docTypeId, search, fieldFilters });
+    return { type, fields, records, meta: db.getMeta() };
+  }
+
+  handle('export:getConfig', () => {
+    requireAdmin();
+    return { meta: db.getMeta(), types: db.listDocTypes(), sparten: db.EAD_SPARTEN, roles: db.EAD_FIELD_ROLES };
+  });
+
+  handle('export:setConfig', ({ meta }) => { requireAdmin(); return db.setMeta(meta || {}); });
+
+  handle('export:validate', ({ docTypeId, search, fieldFilters, roleOverrides, findbuch }) => {
+    requireAdmin();
+    const ctx = buildExportContext({ docTypeId, search, fieldFilters, roleOverrides });
+    const report = eadExport.validateForExport({ meta: ctx.meta, findbuch: findbuch || {}, records: ctx.records, fields: ctx.fields });
+    return { ...report, docTypeName: ctx.type.name };
+  });
+
+  handle('export:run', async ({ docTypeId, search, fieldFilters, roleOverrides, findbuch }) => {
+    requireAdmin();
+    const ctx = buildExportContext({ docTypeId, search, fieldFilters, roleOverrides });
+    const report = eadExport.validateForExport({ meta: ctx.meta, findbuch: findbuch || {}, records: ctx.records, fields: ctx.fields });
+    if (!report.ok) {
+      throw new db.AppError('VALIDATION', 'Der Export ist noch nicht vollständig – bitte beheben Sie zuerst die gemeldeten Probleme.');
+    }
+    const xml = eadExport.buildFindbuchXml({ meta: ctx.meta, findbuch: findbuch || {}, records: ctx.records, fields: ctx.fields });
+
+    const safeName = String((findbuch && findbuch.eadid) || ctx.type.name || 'findbuch')
+      .replace(/[^A-Za-z0-9_.-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80) || 'findbuch';
+    const res = await dialog.showSaveDialog(getWindow(), {
+      title: 'EAD-Findbuch exportieren',
+      defaultPath: `${safeName}.xml`,
+      filters: [{ name: 'EAD-XML', extensions: ['xml'] }],
+    });
+    if (res.canceled || !res.filePath) return { canceled: true };
+    fs.writeFileSync(res.filePath, xml, 'utf8');
+    return { canceled: false, filePath: res.filePath, recordCount: ctx.records.length };
   });
 
   /* ----- dashboard ----- */

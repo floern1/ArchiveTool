@@ -12,6 +12,7 @@ const CHANNELS = new Set([
   'records:delete', 'records:history',
   'rewind:list', 'rewind:revert',
   'import:pickFile', 'import:preview', 'import:buildResolution', 'import:commit', 'import:cancel',
+  'export:getConfig', 'export:setConfig', 'export:validate', 'export:run',
   'stats:get',
   'file:pick', 'file:openPath', 'file:showInFolder',
 ]);
